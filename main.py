@@ -143,7 +143,19 @@ async def search_documents_title(query: str, limit: int = 20) -> List[SearchResu
     
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
+            print(f"🔍 Sending title search request: {json.dumps(search_body, indent=2)}")
             response = await client.post(search_url, headers=headers, json=search_body)
+            
+            # Log the response for debugging
+            print(f"📊 Response status: {response.status_code}")
+            print(f"📊 Response headers: {dict(response.headers)}")
+            
+            if response.status_code == 400:
+                error_text = response.text
+                print(f"❌ 400 Error details: {error_text}")
+                # Try a simpler search format
+                return await search_documents_simple(query, limit, "title")
+            
             response.raise_for_status()
             data = response.json()
             
@@ -188,8 +200,89 @@ async def search_documents_title(query: str, limit: int = 20) -> List[SearchResu
             
     except Exception as e:
         print(f"❌ Title search failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Title search failed: {str(e)}")
+        # Try fallback search methods
+        try:
+            return await search_documents_simple(query, limit, "title")
+        except Exception as fallback_error:
+            print(f"❌ Fallback search also failed: {str(fallback_error)}")
+            return []
 
+async def search_documents_simple(query: str, limit: int = 20, search_type: str = "simple") -> List[SearchResult]:
+    """Simple search using GET parameters - fallback method"""
+    print(f"🔍 Trying simple search ({search_type}): '{query}'")
+    
+    token = await get_token()
+    
+    # Use GET endpoint with query parameters
+    search_url = f"{URL_PREFIX}/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents"
+    
+    headers = {"X-Auth-Token": token}
+    
+    # Try different parameter combinations
+    params_options = [
+        {"name": query, "limit": limit},
+        {"anywhere": query, "limit": limit},
+        {"title": query, "limit": limit},
+        {"body": query, "limit": limit},
+        {"q": query, "limit": limit}  # Sometimes 'q' is used as generic search
+    ]
+    
+    for params in params_options:
+        try:
+            print(f"🔍 Trying search with params: {params}")
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.get(search_url, headers=headers, params=params)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    results = []
+                    for doc in data.get("data", []):
+                        doc_id = doc.get("id", "")
+                        title = doc.get("name", "Untitled Document")
+                        
+                        # Create text snippet from document metadata
+                        text_parts = []
+                        if doc.get("comments"):
+                            text_parts.append(f"Comments: {doc['comments']}")
+                        if doc.get("author"):
+                            text_parts.append(f"Author: {doc['author']}")
+                        if doc.get("type"):
+                            text_parts.append(f"Type: {doc['type']}")
+                        if doc.get("edit_date"):
+                            text_parts.append(f"Last Modified: {doc['edit_date']}")
+                        
+                        text = "; ".join(text_parts) if text_parts else f"Document found with {search_type} search"
+                        
+                        # Generate document URL for citations
+                        doc_url = f"{URL_PREFIX}/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/{doc_id}"
+                        
+                        metadata = {
+                            "document_number": str(doc.get("document_number", "")),
+                            "version": str(doc.get("version", "")),
+                            "size": str(doc.get("size", "")),
+                            "search_type": search_type
+                        }
+                        
+                        results.append(SearchResult(
+                            id=doc_id,
+                            title=title,
+                            text=text,
+                            url=doc_url,
+                            metadata=metadata
+                        ))
+                    
+                    print(f"📄 Simple search found {len(results)} documents")
+                    return results[:limit]  # Limit results
+                else:
+                    print(f"⚠️ Search params {params} returned {response.status_code}")
+                    
+        except Exception as e:
+            print(f"⚠️ Search params {params} failed: {str(e)}")
+            continue
+    
+    print("❌ All simple search methods failed")
+    return []
 async def search_documents_keyword(query: str, limit: int = 20) -> List[SearchResult]:
     """Search documents by keywords (full-text search)"""
     print(f"🔍 Searching documents by keywords: '{query}'")
@@ -202,70 +295,99 @@ async def search_documents_keyword(query: str, limit: int = 20) -> List[SearchRe
         "Content-Type": "application/json"
     }
     
-    # Search using POST with filters for keyword/full-text search
-    search_body = {
-        "limit": limit,
-        "filters": {
-            "anywhere": query,
-            "body": query
+    # Try different search body formats
+    search_body_options = [
+        # Option 1: Standard format
+        {
+            "limit": limit,
+            "filters": {
+                "anywhere": query
+            },
+            "profile_fields": {
+                "document": [
+                    "id", "name", "document_number", "version", "author", 
+                    "edit_date", "create_date", "size", "type", "comments"
+                ]
+            }
         },
-        "profile_fields": {
-            "document": [
-                "id", "name", "document_number", "version", "author", 
-                "edit_date", "create_date", "size", "type", "comments"
-            ]
+        # Option 2: Simplified format
+        {
+            "limit": limit,
+            "filters": {
+                "anywhere": query
+            }
+        },
+        # Option 3: Body search only
+        {
+            "limit": limit,
+            "filters": {
+                "body": query
+            }
         }
-    }
+    ]
     
+    for i, search_body in enumerate(search_body_options):
+        try:
+            print(f"🔍 Trying keyword search format {i+1}: {json.dumps(search_body, indent=2)}")
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(search_url, headers=headers, json=search_body)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    results = []
+                    for doc in data.get("data", []):
+                        doc_id = doc.get("id", "")
+                        title = doc.get("name", "Untitled Document")
+                        
+                        # Create text snippet from document metadata
+                        text_parts = []
+                        if doc.get("comments"):
+                            text_parts.append(f"Comments: {doc['comments']}")
+                        if doc.get("author"):
+                            text_parts.append(f"Author: {doc['author']}")
+                        if doc.get("type"):
+                            text_parts.append(f"Type: {doc['type']}")
+                        if doc.get("edit_date"):
+                            text_parts.append(f"Last Modified: {doc['edit_date']}")
+                        
+                        text = "; ".join(text_parts) if text_parts else f"Document contains keyword: {query}"
+                        
+                        # Generate document URL for citations
+                        doc_url = f"{URL_PREFIX}/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/{doc_id}"
+                        
+                        metadata = {
+                            "document_number": str(doc.get("document_number", "")),
+                            "version": str(doc.get("version", "")),
+                            "size": str(doc.get("size", "")),
+                            "search_type": "keyword",
+                            "search_query": query
+                        }
+                        
+                        results.append(SearchResult(
+                            id=doc_id,
+                            title=title,
+                            text=text,
+                            url=doc_url,
+                            metadata=metadata
+                        ))
+                    
+                    print(f"📄 Found {len(results)} documents by keywords")
+                    return results
+                else:
+                    print(f"⚠️ Search format {i+1} returned {response.status_code}: {response.text}")
+                    
+        except Exception as e:
+            print(f"⚠️ Search format {i+1} failed: {str(e)}")
+            continue
+    
+    # If all POST methods fail, try GET fallback
+    print("🔄 POST search failed, trying GET fallback")
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(search_url, headers=headers, json=search_body)
-            response.raise_for_status()
-            data = response.json()
-            
-            results = []
-            for doc in data.get("data", []):
-                doc_id = doc.get("id", "")
-                title = doc.get("name", "Untitled Document")
-                
-                # Create text snippet from document metadata
-                text_parts = []
-                if doc.get("comments"):
-                    text_parts.append(f"Comments: {doc['comments']}")
-                if doc.get("author"):
-                    text_parts.append(f"Author: {doc['author']}")
-                if doc.get("type"):
-                    text_parts.append(f"Type: {doc['type']}")
-                if doc.get("edit_date"):
-                    text_parts.append(f"Last Modified: {doc['edit_date']}")
-                
-                text = "; ".join(text_parts) if text_parts else f"Document contains keyword: {query}"
-                
-                # Generate document URL for citations
-                doc_url = f"{URL_PREFIX}/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/{doc_id}"
-                
-                metadata = {
-                    "document_number": str(doc.get("document_number", "")),
-                    "version": str(doc.get("version", "")),
-                    "size": str(doc.get("size", "")),
-                    "search_type": "keyword",
-                    "search_query": query
-                }
-                
-                results.append(SearchResult(
-                    id=doc_id,
-                    title=title,
-                    text=text,
-                    url=doc_url,
-                    metadata=metadata
-                ))
-            
-            print(f"📄 Found {len(results)} documents by keywords")
-            return results
-            
-    except Exception as e:
-        print(f"❌ Keyword search failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Keyword search failed: {str(e)}")
+        return await search_documents_simple(query, limit, "keyword")
+    except Exception as fallback_error:
+        print(f"❌ Keyword search and fallback failed: {str(fallback_error)}")
+        return []
 
 async def fetch_document_content(doc_id: str) -> Dict[str, Any]:
     """Fetch full document content and metadata"""
@@ -466,24 +588,59 @@ async def mcp_handler(request: Request):
                     
                     print(f"🔍 Searching for: '{query}'")
                     
-                    # Perform both title and keyword searches to maximize results
-                    title_results = await search_documents_title(query, limit=10)
-                    keyword_results = await search_documents_keyword(query, limit=10)
-                    
-                    # Combine and deduplicate results
+                    # Try searches with better error handling
                     all_results = {}
                     
-                    # Add title results first (higher priority)
-                    for result in title_results:
-                        all_results[result.id] = result
-                    
-                    # Add keyword results, avoiding duplicates
-                    for result in keyword_results:
-                        if result.id not in all_results:
+                    # Try title search first
+                    try:
+                        title_results = await search_documents_title(query, limit=10)
+                        for result in title_results:
                             all_results[result.id] = result
+                        print(f"✅ Title search returned {len(title_results)} results")
+                    except Exception as title_error:
+                        print(f"⚠️ Title search failed: {str(title_error)}")
+                    
+                    # Try keyword search
+                    try:
+                        keyword_results = await search_documents_keyword(query, limit=10)
+                        for result in keyword_results:
+                            if result.id not in all_results:
+                                all_results[result.id] = result
+                        print(f"✅ Keyword search returned {len(keyword_results)} results")
+                    except Exception as keyword_error:
+                        print(f"⚠️ Keyword search failed: {str(keyword_error)}")
+                    
+                    # If no results from either search, try simple fallback
+                    if not all_results:
+                        print("🔄 No results from main searches, trying simple fallback")
+                        try:
+                            fallback_results = await search_documents_simple(query, 20, "fallback")
+                            for result in fallback_results:
+                                all_results[result.id] = result
+                            print(f"✅ Fallback search returned {len(fallback_results)} results")
+                        except Exception as fallback_error:
+                            print(f"❌ Fallback search also failed: {str(fallback_error)}")
                     
                     # Convert to list and limit to 20 total results
                     final_results = list(all_results.values())[:20]
+                    
+                    if not final_results:
+                        # Return a helpful message if no results found
+                        return {
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "result": {
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": json.dumps({
+                                            "results": [],
+                                            "message": f"No documents found for query: '{query}'. Try different search terms or check if documents exist in the library."
+                                        }, indent=2)
+                                    }
+                                ]
+                            }
+                        }
                     
                     # Convert to the expected format
                     results_data = []

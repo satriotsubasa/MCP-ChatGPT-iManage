@@ -53,7 +53,7 @@ LIBRARY_ID = os.getenv("LIBRARY_ID", "")
 
 # Validate required environment variables
 required_vars = [
-    "AUTH_URL_PREFIX", "URL_PREFIX", "USERNAME", "PASSWORD", 
+    "AUTH_URL_PREFIX", "URL_PREFIX", "_USERNAME", "PASSWORD", 
     "CLIENT_ID", "CLIENT_SECRET", "CUSTOMER_ID", "LIBRARY_ID"
 ]
 

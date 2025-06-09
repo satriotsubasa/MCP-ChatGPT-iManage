@@ -16,7 +16,7 @@ Features:
 Environment Variables Required:
 - AUTH_URL_PREFIX: iManage authentication URL prefix
 - URL_PREFIX: iManage API URL prefix 
-- USERNAME: iManage username
+- _USERNAME: iManage username
 - PASSWORD: iManage password
 - CLIENT_ID: OAuth client ID
 - CLIENT_SECRET: OAuth client secret
@@ -44,7 +44,7 @@ app = FastAPI(title="iManage Deep Research MCP Server")
 # ---- Configuration ----
 AUTH_URL_PREFIX = os.getenv("AUTH_URL_PREFIX", "")
 URL_PREFIX = os.getenv("URL_PREFIX", "")
-USERNAME = os.getenv("USERNAME", "")
+_USERNAME = os.getenv("_USERNAME", "")
 PASSWORD = os.getenv("PASSWORD", "")
 CLIENT_ID = os.getenv("CLIENT_ID", "")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET", "")
@@ -53,7 +53,7 @@ LIBRARY_ID = os.getenv("LIBRARY_ID", "")
 
 # Validate required environment variables
 required_vars = [
-    "AUTH_URL_PREFIX", "URL_PREFIX", "USERNAME", "PASSWORD", 
+    "AUTH_URL_PREFIX", "URL_PREFIX", "_USERNAME", "PASSWORD", 
     "CLIENT_ID", "CLIENT_SECRET", "CUSTOMER_ID", "LIBRARY_ID"
 ]
 
@@ -75,7 +75,7 @@ async def get_token() -> str:
     print("🔐 Authenticating to iManage...")
     auth_url = f"{AUTH_URL_PREFIX}/oauth2/token?scope=admin"
     data = {
-        "username": USERNAME,
+        "username": _USERNAME,
         "password": PASSWORD,
         "grant_type": "password",
         "client_id": CLIENT_ID,

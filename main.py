@@ -16,7 +16,7 @@ Features:
 Environment Variables Required:
 - AUTH_URL_PREFIX: iManage authentication URL prefix
 - URL_PREFIX: iManage API URL prefix 
-- USERNAME: iManage username
+- _USERNAME: iManage username
 - PASSWORD: iManage password
 - CLIENT_ID: OAuth client ID
 - CLIENT_SECRET: OAuth client secret
@@ -619,6 +619,49 @@ async def root():
         }
     }
 
+# ---- Manifest and Discovery Endpoints ----
+@app.get("/manifest.json")
+async def manifest():
+    """Application manifest for ChatGPT"""
+    print("📋 Manifest requested")
+    return {
+        "schema_version": "v1",
+        "name_for_model": "imanage_deep_research",
+        "name_for_human": "iManage Deep Research",
+        "description_for_model": "Search and retrieve documents from iManage Work for deep research analysis",
+        "description_for_human": "Access your iManage documents for comprehensive research",
+        "auth": {
+            "type": "none"
+        },
+        "api": {
+            "type": "mcp",
+            "url": "/",
+            "has_user_authentication": False
+        },
+        "logo_url": "",
+        "contact_email": "",
+        "legal_info_url": ""
+    }
+
+@app.get("/.well-known/ai-plugin.json")
+async def ai_plugin():
+    """AI Plugin manifest"""
+    print("🤖 AI Plugin manifest requested")
+    return {
+        "schema_version": "v1",
+        "name_for_model": "imanage_deep_research",
+        "name_for_human": "iManage Deep Research",
+        "description_for_model": "Search and retrieve documents from iManage Work for deep research analysis. No authentication required.",
+        "description_for_human": "Access your iManage documents for comprehensive research",
+        "auth": {
+            "type": "none"
+        },
+        "api": {
+            "type": "mcp",
+            "url": "/",
+            "has_user_authentication": False
+        }
+    }
 # ---- MCP Discovery Endpoints ----
 @app.get("/.well-known/mcp")
 async def mcp_discovery():
@@ -653,6 +696,60 @@ async def options_handler():
         "Access-Control-Allow-Headers": "Content-Type, Authorization"
     }
 
+# ---- OAuth/Connector Endpoints ----
+@app.get("/oauth/authorize")
+async def oauth_authorize():
+    """Handle OAuth authorization - auto-approve since no real auth needed"""
+    print("🔓 OAuth authorize request - auto-approving")
+    return {
+        "code": "auto_approved",
+        "state": "no_auth_required"
+    }
+
+@app.post("/oauth/token") 
+async def oauth_token():
+    """Handle OAuth token request - return dummy token"""
+    print("🔓 OAuth token request - returning dummy token")
+    return {
+        "access_token": "no_auth_required",
+        "token_type": "bearer",
+        "expires_in": 3600,
+        "scope": "read"
+    }
+
+@app.get("/oauth/userinfo")
+async def oauth_userinfo():
+    """Handle OAuth user info request"""
+    print("🔓 OAuth userinfo request")
+    return {
+        "sub": "imanage_user",
+        "name": "iManage User",
+        "email": "user@imanage.com"
+    }
+
+# ---- ChatGPT Connector Specific Endpoints ----
+@app.get("/connectors/oauth")
+async def connectors_oauth(request: Request):
+    """Handle ChatGPT connector OAuth flow"""
+    print("🔗 ChatGPT connector OAuth request")
+    base_url = str(request.base_url).rstrip('/')
+    return {
+        "authorization_url": f"{base_url}/oauth/authorize",
+        "token_url": f"{base_url}/oauth/token",
+        "userinfo_url": f"{base_url}/oauth/userinfo",
+        "scopes": [],
+        "auto_approved": True
+    }
+
+@app.post("/connectors/oauth")
+async def connectors_oauth_post():
+    """Handle ChatGPT connector OAuth POST"""
+    print("🔗 ChatGPT connector OAuth POST request")
+    return {
+        "access_token": "no_auth_required",
+        "token_type": "bearer",
+        "expires_in": 3600
+    }
 # ---- Authentication Endpoints ----
 @app.get("/auth/status")
 async def auth_status():
@@ -672,6 +769,27 @@ async def auth_callback():
         "success": True,
         "authenticated": True,
         "message": "Authentication successful"
+    }
+
+# ---- Handle Any Auth-Related Requests ----
+@app.get("/auth/{path:path}")
+async def auth_catch_all(path: str):
+    """Catch all auth requests and return success"""
+    print(f"🔓 Auth catch-all request: {path}")
+    return {
+        "authenticated": True,
+        "status": "success",
+        "message": "No authentication required"
+    }
+
+@app.post("/auth/{path:path}")
+async def auth_catch_all_post(path: str):
+    """Catch all auth POST requests and return success"""
+    print(f"🔓 Auth catch-all POST request: {path}")
+    return {
+        "authenticated": True,
+        "status": "success",
+        "message": "No authentication required"
     }
 
 # ---- Legacy Endpoints for Testing ----

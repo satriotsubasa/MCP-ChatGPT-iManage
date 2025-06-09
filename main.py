@@ -136,7 +136,7 @@ async def search_documents_title(query: str, limit: int = 20) -> List[SearchResu
         "profile_fields": {
             "document": [
                 "id", "name", "document_number", "version", "author", 
-                "edit_date", "create_date", "size", "type", "comments"
+                "edit_date", "create_date", "size", "type"
             ]
         }
     }
@@ -234,10 +234,24 @@ async def search_documents_simple(query: str, limit: int = 20, search_type: str 
                 response = await client.get(search_url, headers=headers, params=params)
                 
                 if response.status_code == 200:
-                    data = response.json()
+                    try:
+                        data = response.json()
+                    except json.JSONDecodeError:
+                        print(f"⚠️ Response is not JSON: {response.text[:200]}")
+                        continue
+                    
+                    # Handle different response formats
+                    documents = []
+                    if isinstance(data, dict):
+                        documents = data.get("data", [])
+                    elif isinstance(data, list):
+                        documents = data
                     
                     results = []
-                    for doc in data.get("data", []):
+                    for doc in documents:
+                        if not isinstance(doc, dict):
+                            continue
+                            
                         doc_id = doc.get("id", "")
                         title = doc.get("name", "Untitled Document")
                         
@@ -275,7 +289,7 @@ async def search_documents_simple(query: str, limit: int = 20, search_type: str 
                     print(f"📄 Simple search found {len(results)} documents")
                     return results[:limit]  # Limit results
                 else:
-                    print(f"⚠️ Search params {params} returned {response.status_code}")
+                    print(f"⚠️ Search params {params} returned {response.status_code}: {response.text[:200]}")
                     
         except Exception as e:
             print(f"⚠️ Search params {params} failed: {str(e)}")
@@ -297,7 +311,7 @@ async def search_documents_keyword(query: str, limit: int = 20) -> List[SearchRe
     
     # Try different search body formats
     search_body_options = [
-        # Option 1: Standard format
+        # Option 1: Basic fields only (removing comments)
         {
             "limit": limit,
             "filters": {
@@ -306,18 +320,30 @@ async def search_documents_keyword(query: str, limit: int = 20) -> List[SearchRe
             "profile_fields": {
                 "document": [
                     "id", "name", "document_number", "version", "author", 
-                    "edit_date", "create_date", "size", "type", "comments"
+                    "edit_date", "create_date", "size", "type"
                 ]
             }
         },
-        # Option 2: Simplified format
+        # Option 2: Even more basic fields
+        {
+            "limit": limit,
+            "filters": {
+                "anywhere": query
+            },
+            "profile_fields": {
+                "document": [
+                    "id", "name", "author", "edit_date", "type"
+                ]
+            }
+        },
+        # Option 3: No profile_fields specified
         {
             "limit": limit,
             "filters": {
                 "anywhere": query
             }
         },
-        # Option 3: Body search only
+        # Option 4: Body search only
         {
             "limit": limit,
             "filters": {
@@ -1006,6 +1032,38 @@ async def test_connection():
         return {
             "status": "error",
             "message": f"iManage connection failed: {str(e)}",
+            "timestamp": time.time()
+        }
+
+@app.get("/test/search")
+async def test_search():
+    """Test a basic search to verify API format"""
+    print("🧪 Testing basic search...")
+    
+    try:
+        token = await get_token()
+        
+        # Test the simplest possible search
+        search_url = f"{URL_PREFIX}/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents"
+        headers = {"X-Auth-Token": token}
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Test GET with minimal params
+            response = await client.get(search_url, headers=headers, params={"limit": 5})
+            
+            return {
+                "status": "success" if response.status_code == 200 else "error",
+                "status_code": response.status_code,
+                "response_sample": response.text[:500],
+                "headers": dict(response.headers),
+                "url": search_url
+            }
+            
+    except Exception as e:
+        print(f"❌ Search test failed: {str(e)}")
+        return {
+            "status": "error",
+            "message": f"Search test failed: {str(e)}",
             "timestamp": time.time()
         }
 

@@ -30,9 +30,9 @@ import json
 import os
 import time
 from typing import Dict, List, Any, Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 import logging
 
 # Configure logging
@@ -96,17 +96,7 @@ async def get_token() -> str:
         print(f"❌ Authentication failed: {str(e)}")
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
-# ---- MCP Models ----
-class SearchRequest(BaseModel):
-    query: str
-
-class FetchRequest(BaseModel):
-    id: str
-
-class MCPResponse(BaseModel):
-    content: List[Dict[str, Any]]
-    isError: bool = False
-
+# ---- Simple Models ----
 class SearchResult(BaseModel):
     id: str
     title: str
@@ -131,7 +121,7 @@ async def search_documents_title(query: str, limit: int = 20) -> List[SearchResu
     search_body = {
         "limit": limit,
         "filters": {
-            "name": query  # Search in document name/title
+            "name": query
         },
         "profile_fields": {
             "document": [
@@ -206,8 +196,8 @@ async def search_documents_keyword(query: str, limit: int = 20) -> List[SearchRe
     search_body = {
         "limit": limit,
         "filters": {
-            "anywhere": query,  # Search anywhere in document content and metadata
-            "body": query       # Also search in document body/content
+            "anywhere": query,
+            "body": query
         },
         "profile_fields": {
             "document": [
@@ -356,47 +346,27 @@ async def fetch_document_content(doc_id: str) -> Dict[str, Any]:
         print(f"❌ Failed to fetch document {doc_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch document: {str(e)}")
 
-# ---- MCP Protocol Models ----
-class MCPRequest(BaseModel):
-    jsonrpc: str = "2.0"
-    id: Optional[str] = None
-    method: str
-    params: Optional[Dict[str, Any]] = None
-
-class MCPResponse(BaseModel):
-    jsonrpc: str = "2.0"
-    id: Optional[str] = None
-    result: Optional[Dict[str, Any]] = None
-    error: Optional[Dict[str, Any]] = None
-
-class ToolCallRequest(BaseModel):
-    name: str
-    arguments: Dict[str, Any]
-
-# ---- MCP Protocol Endpoints ----
-@app.get("/")
-async def root():
-    """Health check and basic info endpoint"""
-    print("🏥 Health check requested")
-    return {
-        "name": "iManage Deep Research MCP Server",
-        "version": "1.0.0",
-        "description": "MCP server for ChatGPT integration with iManage Work API",
-        "protocol": "MCP/1.0",
-        "capabilities": ["tools"],
-        "status": "healthy"
-    }
-
+# ---- MCP Protocol Handler ----
 @app.post("/")
-async def mcp_handler(request: MCPRequest):
-    """Main MCP protocol handler"""
-    print(f"📨 MCP request: {request.method}")
+async def mcp_handler(request: Request):
+    """Main MCP protocol handler - handles raw JSON"""
+    print("📨 MCP request received")
     
     try:
-        if request.method == "initialize":
-            return MCPResponse(
-                id=request.id,
-                result={
+        # Parse the raw JSON request
+        body = await request.json()
+        print(f"🔍 Request body: {json.dumps(body, indent=2)}")
+        
+        method = body.get("method", "")
+        request_id = body.get("id")
+        params = body.get("params", {})
+        
+        if method == "initialize":
+            print("🚀 Initialize request")
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {
                         "tools": {}
@@ -406,13 +376,14 @@ async def mcp_handler(request: MCPRequest):
                         "version": "1.0.0"
                     }
                 }
-            )
+            }
         
-        elif request.method == "tools/list":
-            print("🛠️ Tools list requested by ChatGPT")
-            return MCPResponse(
-                id=request.id,
-                result={
+        elif method == "tools/list":
+            print("🛠️ Tools list requested")
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
                     "tools": [
                         {
                             "name": "search",
@@ -447,19 +418,21 @@ async def mcp_handler(request: MCPRequest):
                         }
                     ]
                 }
-            )
+            }
         
-        elif request.method == "tools/call":
-            tool_name = request.params.get("name")
-            arguments = request.params.get("arguments", {})
+        elif method == "tools/call":
+            tool_name = params.get("name")
+            arguments = params.get("arguments", {})
+            
+            print(f"🔧 Tool call: {tool_name} with args: {arguments}")
             
             if tool_name == "search":
-                print(f"🔍 Search request from ChatGPT: '{arguments.get('query', '')}'")
-                
                 try:
                     query = arguments.get("query", "")
                     if not query:
                         raise ValueError("Query parameter is required")
+                    
+                    print(f"🔍 Searching for: '{query}'")
                     
                     # Perform both title and keyword searches to maximize results
                     title_results = await search_documents_title(query, limit=10)
@@ -490,11 +463,12 @@ async def mcp_handler(request: MCPRequest):
                             "url": result.url
                         })
                     
-                    print(f"✅ Returning {len(results_data)} search results to ChatGPT")
+                    print(f"✅ Returning {len(results_data)} search results")
                     
-                    return MCPResponse(
-                        id=request.id,
-                        result={
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {
                             "content": [
                                 {
                                     "type": "text",
@@ -502,33 +476,35 @@ async def mcp_handler(request: MCPRequest):
                                 }
                             ]
                         }
-                    )
+                    }
                     
                 except Exception as e:
-                    print(f"❌ Search tool failed: {str(e)}")
-                    return MCPResponse(
-                        id=request.id,
-                        error={
+                    print(f"❌ Search failed: {str(e)}")
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
                             "code": -32603,
                             "message": f"Search failed: {str(e)}"
                         }
-                    )
+                    }
             
             elif tool_name == "fetch":
-                print(f"📥 Fetch request from ChatGPT: {arguments.get('id', '')}")
-                
                 try:
                     doc_id = arguments.get("id", "")
                     if not doc_id:
                         raise ValueError("Document ID parameter is required")
                     
+                    print(f"📥 Fetching document: {doc_id}")
+                    
                     document = await fetch_document_content(doc_id)
                     
-                    print(f"✅ Returning document content to ChatGPT")
+                    print(f"✅ Document fetched successfully")
                     
-                    return MCPResponse(
-                        id=request.id,
-                        result={
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {
                             "content": [
                                 {
                                     "type": "text",
@@ -536,45 +512,79 @@ async def mcp_handler(request: MCPRequest):
                                 }
                             ]
                         }
-                    )
+                    }
                     
                 except Exception as e:
-                    print(f"❌ Fetch tool failed: {str(e)}")
-                    return MCPResponse(
-                        id=request.id,
-                        error={
+                    print(f"❌ Fetch failed: {str(e)}")
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
                             "code": -32603,
                             "message": f"Fetch failed: {str(e)}"
                         }
-                    )
+                    }
             
             else:
-                return MCPResponse(
-                    id=request.id,
-                    error={
+                print(f"❌ Unknown tool: {tool_name}")
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {
                         "code": -32601,
                         "message": f"Unknown tool: {tool_name}"
                     }
-                )
+                }
         
         else:
-            return MCPResponse(
-                id=request.id,
-                error={
+            print(f"❌ Unknown method: {method}")
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {
                     "code": -32601,
-                    "message": f"Unknown method: {request.method}"
+                    "message": f"Unknown method: {method}"
                 }
-            )
+            }
+    
+    except json.JSONDecodeError as e:
+        print(f"❌ Invalid JSON: {str(e)}")
+        return {
+            "jsonrpc": "2.0",
+            "error": {
+                "code": -32700,
+                "message": "Parse error: Invalid JSON"
+            }
+        }
     
     except Exception as e:
-        print(f"❌ MCP handler failed: {str(e)}")
-        return MCPResponse(
-            id=request.id,
-            error={
+        print(f"❌ Handler error: {str(e)}")
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {
                 "code": -32603,
                 "message": f"Internal error: {str(e)}"
             }
-        )
+        }
+
+@app.get("/")
+async def root():
+    """Health check and basic info endpoint for GET requests"""
+    print("🏥 Health check requested (GET)")
+    return {
+        "name": "iManage Deep Research MCP Server",
+        "version": "1.0.0",
+        "description": "MCP server for ChatGPT integration with iManage Work API",
+        "protocol": "MCP/1.0",
+        "capabilities": ["tools"],
+        "status": "healthy",
+        "endpoints": {
+            "mcp": "POST /",
+            "health": "GET /health",
+            "test": "GET /test"
+        }
+    }
 
 # ---- Legacy Endpoints for Testing ----
 @app.get("/mcp/tools")

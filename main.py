@@ -16,7 +16,7 @@ Features:
 Environment Variables Required:
 - AUTH_URL_PREFIX: iManage authentication URL prefix
 - URL_PREFIX: iManage API URL prefix 
-- _USERNAME: iManage username
+- USERNAME: iManage username
 - PASSWORD: iManage password
 - CLIENT_ID: OAuth client ID
 - CLIENT_SECRET: OAuth client secret
@@ -44,7 +44,7 @@ app = FastAPI(title="iManage Deep Research MCP Server")
 # ---- Configuration ----
 AUTH_URL_PREFIX = os.getenv("AUTH_URL_PREFIX", "")
 URL_PREFIX = os.getenv("URL_PREFIX", "")
-_USERNAME = os.getenv("_USERNAME", "")
+USERNAME = os.getenv("USERNAME", "")
 PASSWORD = os.getenv("PASSWORD", "")
 CLIENT_ID = os.getenv("CLIENT_ID", "")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET", "")
@@ -53,7 +53,7 @@ LIBRARY_ID = os.getenv("LIBRARY_ID", "")
 
 # Validate required environment variables
 required_vars = [
-    "AUTH_URL_PREFIX", "URL_PREFIX", "_USERNAME", "PASSWORD", 
+    "AUTH_URL_PREFIX", "URL_PREFIX", "USERNAME", "PASSWORD", 
     "CLIENT_ID", "CLIENT_SECRET", "CUSTOMER_ID", "LIBRARY_ID"
 ]
 
@@ -75,7 +75,7 @@ async def get_token() -> str:
     print("🔐 Authenticating to iManage...")
     auth_url = f"{AUTH_URL_PREFIX}/oauth2/token?scope=admin"
     data = {
-        "username": _USERNAME,
+        "username": USERNAME,
         "password": PASSWORD,
         "grant_type": "password",
         "client_id": CLIENT_ID,
@@ -356,205 +356,285 @@ async def fetch_document_content(doc_id: str) -> Dict[str, Any]:
         print(f"❌ Failed to fetch document {doc_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch document: {str(e)}")
 
-# ---- MCP Endpoints ----
+# ---- MCP Protocol Models ----
+class MCPRequest(BaseModel):
+    jsonrpc: str = "2.0"
+    id: Optional[str] = None
+    method: str
+    params: Optional[Dict[str, Any]] = None
+
+class MCPResponse(BaseModel):
+    jsonrpc: str = "2.0"
+    id: Optional[str] = None
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[Dict[str, Any]] = None
+
+class ToolCallRequest(BaseModel):
+    name: str
+    arguments: Dict[str, Any]
+
+# ---- MCP Protocol Endpoints ----
 @app.get("/")
 async def root():
-    """Health check endpoint"""
+    """Health check and basic info endpoint"""
     print("🏥 Health check requested")
-    return {"status": "healthy", "message": "iManage Deep Research MCP Server is running"}
+    return {
+        "name": "iManage Deep Research MCP Server",
+        "version": "1.0.0",
+        "description": "MCP server for ChatGPT integration with iManage Work API",
+        "protocol": "MCP/1.0",
+        "capabilities": ["tools"],
+        "status": "healthy"
+    }
 
-@app.get("/mcp/tools")
-async def get_tools():
-    """Return MCP tool definitions for ChatGPT"""
-    print("🛠️ Tools requested by ChatGPT")
+@app.post("/")
+async def mcp_handler(request: MCPRequest):
+    """Main MCP protocol handler"""
+    print(f"📨 MCP request: {request.method}")
     
-    tools = {
+    try:
+        if request.method == "initialize":
+            return MCPResponse(
+                id=request.id,
+                result={
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {
+                        "tools": {}
+                    },
+                    "serverInfo": {
+                        "name": "iManage Deep Research MCP Server",
+                        "version": "1.0.0"
+                    }
+                }
+            )
+        
+        elif request.method == "tools/list":
+            print("🛠️ Tools list requested by ChatGPT")
+            return MCPResponse(
+                id=request.id,
+                result={
+                    "tools": [
+                        {
+                            "name": "search",
+                            "description": "Search for documents in iManage using title search or keyword search. "
+                                          "For title search, use specific document names or titles. "
+                                          "For keyword search, use terms that might appear in document content. "
+                                          "The system will automatically determine the best search strategy. "
+                                          "You can search for legal documents, contracts, memos, emails, and other business documents. "
+                                          "Use specific terms like client names, matter names, document types, or legal concepts.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "query": {
+                                        "type": "string", 
+                                        "description": "Search query. Can be document titles, keywords, or phrases to search for in documents."
+                                    }
+                                },
+                                "required": ["query"]
+                            }
+                        },
+                        {
+                            "name": "fetch",
+                            "description": "Retrieve the complete content and metadata of a specific document by its ID. "
+                                          "Use this after finding documents with search to get the full document content for analysis.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {"type": "string", "description": "Document ID obtained from search results"}
+                                },
+                                "required": ["id"]
+                            }
+                        }
+                    ]
+                }
+            )
+        
+        elif request.method == "tools/call":
+            tool_name = request.params.get("name")
+            arguments = request.params.get("arguments", {})
+            
+            if tool_name == "search":
+                print(f"🔍 Search request from ChatGPT: '{arguments.get('query', '')}'")
+                
+                try:
+                    query = arguments.get("query", "")
+                    if not query:
+                        raise ValueError("Query parameter is required")
+                    
+                    # Perform both title and keyword searches to maximize results
+                    title_results = await search_documents_title(query, limit=10)
+                    keyword_results = await search_documents_keyword(query, limit=10)
+                    
+                    # Combine and deduplicate results
+                    all_results = {}
+                    
+                    # Add title results first (higher priority)
+                    for result in title_results:
+                        all_results[result.id] = result
+                    
+                    # Add keyword results, avoiding duplicates
+                    for result in keyword_results:
+                        if result.id not in all_results:
+                            all_results[result.id] = result
+                    
+                    # Convert to list and limit to 20 total results
+                    final_results = list(all_results.values())[:20]
+                    
+                    # Convert to the expected format
+                    results_data = []
+                    for result in final_results:
+                        results_data.append({
+                            "id": result.id,
+                            "title": result.title,
+                            "text": result.text,
+                            "url": result.url
+                        })
+                    
+                    print(f"✅ Returning {len(results_data)} search results to ChatGPT")
+                    
+                    return MCPResponse(
+                        id=request.id,
+                        result={
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": json.dumps({"results": results_data}, indent=2)
+                                }
+                            ]
+                        }
+                    )
+                    
+                except Exception as e:
+                    print(f"❌ Search tool failed: {str(e)}")
+                    return MCPResponse(
+                        id=request.id,
+                        error={
+                            "code": -32603,
+                            "message": f"Search failed: {str(e)}"
+                        }
+                    )
+            
+            elif tool_name == "fetch":
+                print(f"📥 Fetch request from ChatGPT: {arguments.get('id', '')}")
+                
+                try:
+                    doc_id = arguments.get("id", "")
+                    if not doc_id:
+                        raise ValueError("Document ID parameter is required")
+                    
+                    document = await fetch_document_content(doc_id)
+                    
+                    print(f"✅ Returning document content to ChatGPT")
+                    
+                    return MCPResponse(
+                        id=request.id,
+                        result={
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": json.dumps(document, indent=2)
+                                }
+                            ]
+                        }
+                    )
+                    
+                except Exception as e:
+                    print(f"❌ Fetch tool failed: {str(e)}")
+                    return MCPResponse(
+                        id=request.id,
+                        error={
+                            "code": -32603,
+                            "message": f"Fetch failed: {str(e)}"
+                        }
+                    )
+            
+            else:
+                return MCPResponse(
+                    id=request.id,
+                    error={
+                        "code": -32601,
+                        "message": f"Unknown tool: {tool_name}"
+                    }
+                )
+        
+        else:
+            return MCPResponse(
+                id=request.id,
+                error={
+                    "code": -32601,
+                    "message": f"Unknown method: {request.method}"
+                }
+            )
+    
+    except Exception as e:
+        print(f"❌ MCP handler failed: {str(e)}")
+        return MCPResponse(
+            id=request.id,
+            error={
+                "code": -32603,
+                "message": f"Internal error: {str(e)}"
+            }
+        )
+
+# ---- Legacy Endpoints for Testing ----
+@app.get("/mcp/tools")
+async def get_tools_legacy():
+    """Legacy endpoint for testing - redirects to proper MCP format"""
+    print("🔄 Legacy tools endpoint accessed - redirecting to MCP format")
+    return {
+        "message": "This is a legacy endpoint. Use POST / with proper MCP protocol.",
+        "mcp_format": "POST / with method='tools/list'",
         "tools": [
             {
                 "name": "search",
-                "description": "Search for documents in iManage using title search or keyword search. "
-                              "For title search, use specific document names or titles. "
-                              "For keyword search, use terms that might appear in document content. "
-                              "The system will automatically determine the best search strategy. "
-                              "You can search for legal documents, contracts, memos, emails, and other business documents. "
-                              "Use specific terms like client names, matter names, document types, or legal concepts.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string", 
-                            "description": "Search query. Can be document titles, keywords, or phrases to search for in documents."
-                        }
-                    },
-                    "required": ["query"]
-                },
-                "output_schema": {
-                    "type": "object",
-                    "properties": {
-                        "results": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "id": {"type": "string", "description": "Document ID for fetching full content"},
-                                    "title": {"type": "string", "description": "Document title or name"},
-                                    "text": {"type": "string", "description": "Document summary or excerpt"},
-                                    "url": {"type": "string", "description": "Document URL for citations"}
-                                },
-                                "required": ["id", "title", "text"]
-                            }
-                        }
-                    },
-                    "required": ["results"]
-                }
+                "description": "Search iManage documents"
             },
             {
-                "name": "fetch",
-                "description": "Retrieve the complete content and metadata of a specific document by its ID. "
-                              "Use this after finding documents with search to get the full document content for analysis.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "id": {"type": "string", "description": "Document ID obtained from search results"}
-                    },
-                    "required": ["id"]
-                },
-                "output_schema": {
-                    "type": "object",
-                    "properties": {
-                        "id": {"type": "string", "description": "Document ID"},
-                        "title": {"type": "string", "description": "Document title"},
-                        "text": {"type": "string", "description": "Complete document content and metadata"},
-                        "url": {"type": "string", "description": "Document URL for citations"},
-                        "metadata": {
-                            "type": "object",
-                            "additionalProperties": {"type": "string"},
-                            "description": "Document metadata including author, type, dates, etc."
-                        }
-                    },
-                    "required": ["id", "title", "text"]
-                }
+                "name": "fetch", 
+                "description": "Fetch document content"
             }
         ]
     }
-    
-    return tools
 
-@app.post("/mcp/tools/search")
-async def search_tool(request: SearchRequest):
-    """MCP search tool endpoint"""
-    print(f"🔍 Search request from ChatGPT: '{request.query}'")
-    
-    try:
-        # Perform both title and keyword searches to maximize results
-        title_results = await search_documents_title(request.query, limit=10)
-        keyword_results = await search_documents_keyword(request.query, limit=10)
-        
-        # Combine and deduplicate results
-        all_results = {}
-        
-        # Add title results first (higher priority)
-        for result in title_results:
-            all_results[result.id] = result
-        
-        # Add keyword results, avoiding duplicates
-        for result in keyword_results:
-            if result.id not in all_results:
-                all_results[result.id] = result
-        
-        # Convert to list and limit to 20 total results
-        final_results = list(all_results.values())[:20]
-        
-        # Convert to the expected format
-        results_data = []
-        for result in final_results:
-            results_data.append({
-                "id": result.id,
-                "title": result.title,
-                "text": result.text,
-                "url": result.url,
-                "metadata": result.metadata
-            })
-        
-        response = MCPResponse(
-            content=[{
-                "type": "text",
-                "text": json.dumps({"results": results_data}, indent=2)
-            }]
-        )
-        
-        print(f"✅ Returning {len(results_data)} search results to ChatGPT")
-        return response
-        
-    except Exception as e:
-        print(f"❌ Search tool failed: {str(e)}")
-        return MCPResponse(
-            content=[{
-                "type": "text", 
-                "text": f"Search failed: {str(e)}"
-            }],
-            isError=True
-        )
+@app.get("/health")
+async def health_check():
+    """Simple health check endpoint"""
+    print("🩺 Health check via /health")
+    return {"status": "healthy", "timestamp": time.time()}
 
-@app.post("/mcp/tools/fetch")
-async def fetch_tool(request: FetchRequest):
-    """MCP fetch tool endpoint"""
-    print(f"📥 Fetch request from ChatGPT: {request.id}")
+# ---- Test Endpoints ----
+@app.get("/test")
+async def test_connection():
+    """Test iManage connection"""
+    print("🧪 Testing iManage connection...")
     
     try:
-        document = await fetch_document_content(request.id)
+        token = await get_token()
         
-        response = MCPResponse(
-            content=[{
-                "type": "text",
-                "text": json.dumps(document, indent=2)
-            }]
-        )
+        # Test a simple API call
+        test_url = f"{URL_PREFIX}/api/v2/customers/{CUSTOMER_ID}/features"
+        headers = {"X-Auth-Token": token}
         
-        print(f"✅ Returning document content to ChatGPT")
-        return response
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(test_url, headers=headers)
+            response.raise_for_status()
+            
+        print("✅ iManage connection test successful")
+        return {
+            "status": "success",
+            "message": "iManage connection working",
+            "customer_id": CUSTOMER_ID,
+            "library_id": LIBRARY_ID,
+            "timestamp": time.time()
+        }
         
     except Exception as e:
-        print(f"❌ Fetch tool failed: {str(e)}")
-        return MCPResponse(
-            content=[{
-                "type": "text",
-                "text": f"Fetch failed: {str(e)}"
-            }],
-            isError=True
-        )
-
-# ---- Additional Helper Endpoints ----
-@app.get("/mcp/capabilities")
-async def get_capabilities():
-    """Return MCP server capabilities"""
-    print("🎯 Capabilities requested")
-    return {
-        "capabilities": {
-            "tools": True,
-            "resources": False,
-            "prompts": False
-        },
-        "serverInfo": {
-            "name": "iManage Deep Research MCP Server",
-            "version": "1.0.0"
+        print(f"❌ iManage connection test failed: {str(e)}")
+        return {
+            "status": "error",
+            "message": f"iManage connection failed: {str(e)}",
+            "timestamp": time.time()
         }
-    }
-
-@app.post("/mcp/initialize")
-async def initialize():
-    """Initialize MCP connection"""
-    print("🚀 MCP connection initialized")
-    return {
-        "protocolVersion": "2024-11-05",
-        "capabilities": {
-            "tools": True
-        },
-        "serverInfo": {
-            "name": "iManage Deep Research MCP Server",
-            "version": "1.0.0"
-        }
-    }
 
 # ---- Startup ----
 @app.on_event("startup")

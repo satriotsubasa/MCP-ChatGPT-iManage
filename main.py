@@ -16,7 +16,7 @@ Features:
 Environment Variables Required:
 - AUTH_URL_PREFIX: iManage authentication URL prefix
 - URL_PREFIX: iManage API URL prefix 
-- _USERNAME: iManage username
+- USERNAME: iManage username
 - PASSWORD: iManage password
 - CLIENT_ID: OAuth client ID
 - CLIENT_SECRET: OAuth client secret
@@ -32,6 +32,7 @@ import time
 from typing import Dict, List, Any, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ValidationError
 import logging
 
@@ -41,10 +42,19 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="iManage Deep Research MCP Server")
 
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # ---- Configuration ----
 AUTH_URL_PREFIX = os.getenv("AUTH_URL_PREFIX", "")
 URL_PREFIX = os.getenv("URL_PREFIX", "")
-_USERNAME = os.getenv("_USERNAME", "")
+USERNAME = os.getenv("USERNAME", "")
 PASSWORD = os.getenv("PASSWORD", "")
 CLIENT_ID = os.getenv("CLIENT_ID", "")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET", "")
@@ -53,7 +63,7 @@ LIBRARY_ID = os.getenv("LIBRARY_ID", "")
 
 # Validate required environment variables
 required_vars = [
-    "AUTH_URL_PREFIX", "URL_PREFIX", "_USERNAME", "PASSWORD", 
+    "AUTH_URL_PREFIX", "URL_PREFIX", "USERNAME", "PASSWORD", 
     "CLIENT_ID", "CLIENT_SECRET", "CUSTOMER_ID", "LIBRARY_ID"
 ]
 
@@ -75,7 +85,7 @@ async def get_token() -> str:
     print("🔐 Authenticating to iManage...")
     auth_url = f"{AUTH_URL_PREFIX}/oauth2/token?scope=admin"
     data = {
-        "username": _USERNAME,
+        "username": USERNAME,
         "password": PASSWORD,
         "grant_type": "password",
         "client_id": CLIENT_ID,
@@ -374,7 +384,29 @@ async def mcp_handler(request: Request):
                     "serverInfo": {
                         "name": "iManage Deep Research MCP Server",
                         "version": "1.0.0"
-                    }
+                    },
+                    "instructions": "This server provides access to iManage document search and retrieval. No authentication is required as the server handles iManage authentication internally."
+                }
+            }
+        
+        elif method == "auth/list":
+            print("🔓 Auth methods requested")
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "authMethods": []  # Empty array means no auth required
+                }
+            }
+        
+        elif method == "auth/status":
+            print("🔓 Auth status requested")
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "authenticated": True,
+                    "method": "none"
                 }
             }
         
@@ -579,11 +611,67 @@ async def root():
         "protocol": "MCP/1.0",
         "capabilities": ["tools"],
         "status": "healthy",
+        "authentication": "none",
         "endpoints": {
             "mcp": "POST /",
             "health": "GET /health",
             "test": "GET /test"
         }
+    }
+
+# ---- MCP Discovery Endpoints ----
+@app.get("/.well-known/mcp")
+async def mcp_discovery():
+    """MCP discovery endpoint"""
+    print("🔍 MCP discovery requested")
+    return {
+        "version": "1.0.0",
+        "name": "iManage Deep Research MCP Server",
+        "description": "Deep research connector for iManage Work API",
+        "capabilities": {
+            "tools": True,
+            "resources": False,
+            "prompts": False
+        },
+        "authentication": {
+            "type": "none"
+        },
+        "endpoint": {
+            "url": "/",
+            "method": "POST"
+        }
+    }
+
+@app.options("/")
+async def options_handler():
+    """Handle CORS preflight requests"""
+    print("🔄 CORS preflight request")
+    return {
+        "Allow": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization"
+    }
+
+# ---- Authentication Endpoints ----
+@app.get("/auth/status")
+async def auth_status():
+    """Return authentication status - no auth required"""
+    print("🔓 Authentication status requested")
+    return {
+        "authenticated": True,
+        "type": "none",
+        "message": "No authentication required - server handles iManage auth internally"
+    }
+
+@app.post("/auth/callback")
+async def auth_callback():
+    """Handle auth callback - always successful since no auth needed"""
+    print("✅ Auth callback - auto-success (no auth required)")
+    return {
+        "success": True,
+        "authenticated": True,
+        "message": "Authentication successful"
     }
 
 # ---- Legacy Endpoints for Testing ----

@@ -268,8 +268,8 @@ async def search_documents_simple(query: str, limit: int = 20, search_type: str 
                         
                         text = "; ".join(text_parts) if text_parts else f"Document found with {search_type} search"
                         
-                        # Generate document URL for citations
-                        doc_url = f"{URL_PREFIX}/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/{doc_id}"
+                        # Generate document URL for citations - FIXED URL FORMAT
+                        doc_url = f"{URL_PREFIX}/work/web/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/{doc_id}"
                         
                         metadata = {
                             "document_number": str(doc.get("document_number", "")),
@@ -379,8 +379,8 @@ async def search_documents_keyword(query: str, limit: int = 20) -> List[SearchRe
                         
                         text = "; ".join(text_parts) if text_parts else f"Document contains keyword: {query}"
                         
-                        # Generate document URL for citations
-                        doc_url = f"{URL_PREFIX}/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/{doc_id}"
+                        # Generate document URL for citations - FIXED URL FORMAT
+                        doc_url = f"{URL_PREFIX}/work/web/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/{doc_id}"
                         
                         metadata = {
                             "document_number": str(doc.get("document_number", "")),
@@ -421,8 +421,8 @@ async def fetch_document_content(doc_id: str) -> Dict[str, Any]:
     
     token = await get_token()
     
-    # First get document metadata
-    doc_url = f"{URL_PREFIX}/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/{doc_id}"
+    # First get document metadata - FIXED URL FORMAT
+    doc_url = f"{URL_PREFIX}/work/web/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/{doc_id}"
     headers = {"X-Auth-Token": token}
     
     try:
@@ -434,8 +434,8 @@ async def fetch_document_content(doc_id: str) -> Dict[str, Any]:
             
             title = doc_data.get("name", "Untitled Document")
             
-            # Try to download document content
-            download_url = f"{URL_PREFIX}/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/{doc_id}/download"
+            # Try to download document content - FIXED URL FORMAT
+            download_url = f"{URL_PREFIX}/work/web/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/{doc_id}/download"
             
             try:
                 download_response = await client.get(download_url, headers=headers)
@@ -480,8 +480,8 @@ async def fetch_document_content(doc_id: str) -> Dict[str, Any]:
             
             full_text = "\n".join(text_parts)
             
-            # Generate document URL for citations
-            doc_citation_url = f"{URL_PREFIX}/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/{doc_id}"
+            # Generate document URL for citations - FIXED URL FORMAT
+            doc_citation_url = f"{URL_PREFIX}/work/web/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/{doc_id}"
             
             metadata = {
                 "document_number": str(doc_data.get("document_number", "")),
@@ -1043,20 +1043,34 @@ async def test_search():
     try:
         token = await get_token()
         
-        # Test the simplest possible search
-        search_url = f"{URL_PREFIX}/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents"
+        # Test both URL formats
+        search_urls = [
+            f"{URL_PREFIX}/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents",
+            f"{URL_PREFIX}/work/web/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents"
+        ]
+        
+        results = {}
         headers = {"X-Auth-Token": token}
         
         async with httpx.AsyncClient(timeout=30.0) as client:
-            # Test GET with minimal params
-            response = await client.get(search_url, headers=headers, params={"limit": 5})
+            for url in search_urls:
+                try:
+                    response = await client.get(url, headers=headers, params={"limit": 5})
+                    results[url] = {
+                        "status_code": response.status_code,
+                        "response_sample": response.text[:500],
+                        "success": response.status_code == 200
+                    }
+                except Exception as e:
+                    results[url] = {
+                        "error": str(e),
+                        "success": False
+                    }
             
             return {
-                "status": "success" if response.status_code == 200 else "error",
-                "status_code": response.status_code,
-                "response_sample": response.text[:500],
-                "headers": dict(response.headers),
-                "url": search_url
+                "status": "completed",
+                "test_results": results,
+                "recommendation": "Use the URL format that returned 200 status"
             }
             
     except Exception as e:
@@ -1065,6 +1079,53 @@ async def test_search():
             "status": "error",
             "message": f"Search test failed: {str(e)}",
             "timestamp": time.time()
+        }
+
+@app.get("/test/document/{doc_id}")
+async def test_document_access(doc_id: str):
+    """Test document access with both URL formats"""
+    print(f"🧪 Testing document access for: {doc_id}")
+    
+    try:
+        token = await get_token()
+        
+        # Test both URL formats for document access
+        doc_urls = [
+            f"{URL_PREFIX}/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/{doc_id}",
+            f"{URL_PREFIX}/work/web/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/{doc_id}"
+        ]
+        
+        results = {}
+        headers = {"X-Auth-Token": token}
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for url in doc_urls:
+                try:
+                    response = await client.get(url, headers=headers)
+                    results[url] = {
+                        "status_code": response.status_code,
+                        "response_sample": response.text[:300],
+                        "success": response.status_code == 200,
+                        "accessible": "data" in response.text.lower()
+                    }
+                except Exception as e:
+                    results[url] = {
+                        "error": str(e),
+                        "success": False,
+                        "accessible": False
+                    }
+            
+            return {
+                "status": "completed",
+                "document_id": doc_id,
+                "test_results": results,
+                "recommendation": "Use the URL format that returned 200 status and contains 'data'"
+            }
+            
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Document test failed: {str(e)}"
         }
 
 # ---- Startup ----

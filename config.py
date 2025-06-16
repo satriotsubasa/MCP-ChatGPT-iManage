@@ -25,7 +25,7 @@ LIBRARY_ID = os.getenv("LIBRARY_ID", "")
 
 # Server Configuration
 BASE_URL = os.getenv("BASE_URL", "")  # Required for OAuth callbacks
-PORT = int(os.getenv("PORT", 8000))
+PORT = int(os.getenv("PORT", 10000))
 
 # Authentication Mode Configuration
 AUTH_MODE = os.getenv("AUTH_MODE", "service").lower()  # "user" or "service"

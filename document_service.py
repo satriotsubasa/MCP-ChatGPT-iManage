@@ -1,18 +1,20 @@
 """
 Document service module for iManage Deep Research MCP Server
+Updated to support user authentication context
 """
 
 import httpx
 from typing import Dict, Any
-from auth import get_token
+from fastapi import Request
+from auth import get_authenticated_token
 from config import URL_PREFIX, CUSTOMER_ID, LIBRARY_ID
 from document_processor import process_document_content, DOCUMENT_PROCESSING_AVAILABLE
 
-async def fetch_document_content(doc_id: str) -> Dict[str, Any]:
-    """Fetch full document content and metadata with enhanced text extraction"""
+async def fetch_document_content(doc_id: str, request: Request = None) -> Dict[str, Any]:
+    """Fetch full document content and metadata with enhanced text extraction and user authentication"""
     print(f"📥 Fetching document content: {doc_id}")
     
-    token = await get_token()
+    token = await get_authenticated_token(request)
     
     # First get document metadata - FIXED URL FORMAT
     doc_url = f"{URL_PREFIX}/work/web/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/{doc_id}"
@@ -114,6 +116,7 @@ async def fetch_document_content(doc_id: str) -> Dict[str, Any]:
             text_parts.append(f"Download Successful: {download_success}")
             text_parts.append(f"Text Extraction: {'Successful' if document_text and len(document_text) > 100 else 'Limited or Failed'}")
             text_parts.append(f"Document Processing Libraries: {'Available' if DOCUMENT_PROCESSING_AVAILABLE else 'Not Available'}")
+            text_parts.append(f"User Authentication: {'Applied' if request else 'Service Account'}")
             
             full_text = "\n".join(text_parts)
             
@@ -129,7 +132,8 @@ async def fetch_document_content(doc_id: str) -> Dict[str, Any]:
                 "download_url": download_url,
                 "download_success": str(download_success),
                 "text_extracted": str(len(document_text) > 100),
-                "processing_available": str(DOCUMENT_PROCESSING_AVAILABLE)
+                "processing_available": str(DOCUMENT_PROCESSING_AVAILABLE),
+                "auth_context": "user" if request else "service"
             }
             
             print(f"📊 Document processing complete: {len(full_text)} total characters")
@@ -144,11 +148,17 @@ async def fetch_document_content(doc_id: str) -> Dict[str, Any]:
             
     except Exception as e:
         print(f"❌ Failed to fetch document {doc_id}: {str(e)}")
-        error_msg = f"Failed to fetch document {doc_id}: {str(e)}"
+        
+        # Check if it's an authentication/authorization error
+        if "401" in str(e) or "403" in str(e):
+            error_msg = f"Access denied to document {doc_id}. You may not have permission to view this document."
+        else:
+            error_msg = f"Failed to fetch document {doc_id}: {str(e)}"
+        
         return {
             "id": doc_id,
             "title": f"Error accessing document {doc_id}",
             "text": error_msg,
             "url": f"{URL_PREFIX}/work/web/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/{doc_id}",
-            "metadata": {"error": str(e)}
+            "metadata": {"error": str(e), "auth_context": "user" if request else "service"}
         }

@@ -1,27 +1,29 @@
 """
 Search service module for iManage Deep Research MCP Server
+Updated to support user authentication context
 """
 
 import json
 import httpx
 from typing import List, Dict, Any
 from pydantic import BaseModel
-from fastapi import HTTPException
-from auth import get_token
+from fastapi import Request
+
 from config import URL_PREFIX, CUSTOMER_ID, LIBRARY_ID
+from auth import get_authenticated_token
 
 class SearchResult(BaseModel):
     id: str
     title: str
     text: str
-    url: str = None
-    metadata: Dict[str, str] = None
+    url: str
+    metadata: Dict[str, str] = {}
 
-async def search_documents_title(query: str, limit: int = 20) -> List[SearchResult]:
-    """Search documents by title/name"""
+async def search_documents_title(query: str, limit: int = 20, request: Request = None) -> List[SearchResult]:
+    """Search documents by title/name with user authentication"""
     print(f"🔍 Searching documents by title: '{query}'")
     
-    token = await get_token()
+    token = await get_authenticated_token(request)
     search_url = f"{URL_PREFIX}/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/search"
     
     headers = {
@@ -48,15 +50,11 @@ async def search_documents_title(query: str, limit: int = 20) -> List[SearchResu
             print(f"🔍 Sending title search request: {json.dumps(search_body, indent=2)}")
             response = await client.post(search_url, headers=headers, json=search_body)
             
-            # Log the response for debugging
-            print(f"📊 Response status: {response.status_code}")
-            print(f"📊 Response headers: {dict(response.headers)}")
-            
             if response.status_code == 400:
                 error_text = response.text
                 print(f"❌ 400 Error details: {error_text}")
                 # Try a simpler search format
-                return await search_documents_simple(query, limit, "title")
+                return await search_documents_simple(query, limit, "title", request)
             
             response.raise_for_status()
             data = response.json()
@@ -77,7 +75,7 @@ async def search_documents_title(query: str, limit: int = 20) -> List[SearchResu
                 
                 text = "; ".join(text_parts) if text_parts else "Document metadata"
                 
-                # Generate document URL for citations - FIXED URL FORMAT
+                # Generate document URL for citations
                 doc_url = f"{URL_PREFIX}/work/web/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/{doc_id}"
                 
                 metadata = {
@@ -102,16 +100,16 @@ async def search_documents_title(query: str, limit: int = 20) -> List[SearchResu
         print(f"❌ Title search failed: {str(e)}")
         # Try fallback search methods
         try:
-            return await search_documents_simple(query, limit, "title")
+            return await search_documents_simple(query, limit, "title", request)
         except Exception as fallback_error:
             print(f"❌ Fallback search also failed: {str(fallback_error)}")
             return []
 
-async def search_documents_keyword(query: str, limit: int = 20) -> List[SearchResult]:
-    """Search documents by keywords (full-text search)"""
+async def search_documents_keyword(query: str, limit: int = 20, request: Request = None) -> List[SearchResult]:
+    """Search documents by keywords (full-text search) with user authentication"""
     print(f"🔍 Searching documents by keywords: '{query}'")
     
-    token = await get_token()
+    token = await get_authenticated_token(request)
     search_url = f"{URL_PREFIX}/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/search"
     
     headers = {
@@ -121,7 +119,7 @@ async def search_documents_keyword(query: str, limit: int = 20) -> List[SearchRe
     
     # Try different search body formats
     search_body_options = [
-        # Option 1: Basic fields only (removing comments)
+        # Option 1: Basic fields only
         {
             "limit": limit,
             "filters": {
@@ -164,7 +162,7 @@ async def search_documents_keyword(query: str, limit: int = 20) -> List[SearchRe
     
     for i, search_body in enumerate(search_body_options):
         try:
-            print(f"🔍 Trying keyword search format {i+1}: {json.dumps(search_body, indent=2)}")
+            print(f"🔍 Trying keyword search format {i+1}")
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(search_url, headers=headers, json=search_body)
                 
@@ -187,7 +185,7 @@ async def search_documents_keyword(query: str, limit: int = 20) -> List[SearchRe
                         
                         text = "; ".join(text_parts) if text_parts else f"Document contains keyword: {query}"
                         
-                        # Generate document URL for citations - FIXED URL FORMAT
+                        # Generate document URL for citations
                         doc_url = f"{URL_PREFIX}/work/web/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/{doc_id}"
                         
                         metadata = {
@@ -209,7 +207,7 @@ async def search_documents_keyword(query: str, limit: int = 20) -> List[SearchRe
                     print(f"📄 Found {len(results)} documents by keywords")
                     return results
                 else:
-                    print(f"⚠️ Search format {i+1} returned {response.status_code}: {response.text}")
+                    print(f"⚠️ Search format {i+1} returned {response.status_code}: {response.text[:200]}")
                     
         except Exception as e:
             print(f"⚠️ Search format {i+1} failed: {str(e)}")
@@ -218,16 +216,16 @@ async def search_documents_keyword(query: str, limit: int = 20) -> List[SearchRe
     # If all POST methods fail, try GET fallback
     print("🔄 POST search failed, trying GET fallback")
     try:
-        return await search_documents_simple(query, limit, "keyword")
+        return await search_documents_simple(query, limit, "keyword", request)
     except Exception as fallback_error:
         print(f"❌ Keyword search and fallback failed: {str(fallback_error)}")
         return []
 
-async def search_documents_simple(query: str, limit: int = 20, search_type: str = "simple") -> List[SearchResult]:
-    """Simple search using GET parameters - fallback method"""
+async def search_documents_simple(query: str, limit: int = 20, search_type: str = "simple", request: Request = None) -> List[SearchResult]:
+    """Simple search using GET parameters - fallback method with user authentication"""
     print(f"🔍 Trying simple search ({search_type}): '{query}'")
     
-    token = await get_token()
+    token = await get_authenticated_token(request)
     
     # Use GET endpoint with query parameters
     search_url = f"{URL_PREFIX}/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents"
@@ -282,7 +280,7 @@ async def search_documents_simple(query: str, limit: int = 20, search_type: str 
                         
                         text = "; ".join(text_parts) if text_parts else f"Document found with {search_type} search"
                         
-                        # Generate document URL for citations - FIXED URL FORMAT
+                        # Generate document URL for citations
                         doc_url = f"{URL_PREFIX}/work/web/api/v2/customers/{CUSTOMER_ID}/libraries/{LIBRARY_ID}/documents/{doc_id}"
                         
                         metadata = {
@@ -312,15 +310,15 @@ async def search_documents_simple(query: str, limit: int = 20, search_type: str 
     print("❌ All simple search methods failed")
     return []
 
-async def perform_combined_search(query: str, limit_per_type: int = 10) -> List[SearchResult]:
-    """Perform both title and keyword searches and combine results"""
+async def perform_combined_search(query: str, limit_per_type: int = 10, request: Request = None) -> List[SearchResult]:
+    """Perform combined search using multiple strategies with user authentication"""
     print(f"🔍 Performing combined search for: '{query}'")
     
     all_results = {}
     
     # Try title search first
     try:
-        title_results = await search_documents_title(query, limit=limit_per_type)
+        title_results = await search_documents_title(query, limit_per_type, request)
         for result in title_results:
             all_results[result.id] = result
         print(f"✅ Title search returned {len(title_results)} results")
@@ -329,7 +327,7 @@ async def perform_combined_search(query: str, limit_per_type: int = 10) -> List[
     
     # Try keyword search
     try:
-        keyword_results = await search_documents_keyword(query, limit=limit_per_type)
+        keyword_results = await search_documents_keyword(query, limit_per_type, request)
         for result in keyword_results:
             if result.id not in all_results:
                 all_results[result.id] = result
@@ -341,15 +339,15 @@ async def perform_combined_search(query: str, limit_per_type: int = 10) -> List[
     if not all_results:
         print("🔄 No results from main searches, trying simple fallback")
         try:
-            fallback_results = await search_documents_simple(query, 20, "fallback")
+            fallback_results = await search_documents_simple(query, 20, "fallback", request)
             for result in fallback_results:
                 all_results[result.id] = result
             print(f"✅ Fallback search returned {len(fallback_results)} results")
         except Exception as fallback_error:
             print(f"❌ Fallback search also failed: {str(fallback_error)}")
     
-    # Convert to list and limit to 20 total results
+    # Convert to list and limit results
     final_results = list(all_results.values())[:20]
+    print(f"📊 Combined search returned {len(final_results)} total results")
     
-    print(f"✅ Combined search returned {len(final_results)} total results")
     return final_results

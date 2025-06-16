@@ -1,5 +1,6 @@
 """
 MCP protocol handlers for iManage Deep Research MCP Server
+Updated to support user authentication context
 """
 
 import json
@@ -8,7 +9,7 @@ from search_service import perform_combined_search
 from document_service import fetch_document_content
 
 async def handle_mcp_request(request: Request):
-    """Main MCP protocol handler - handles raw JSON"""
+    """Main MCP protocol handler - handles raw JSON with user context"""
     print("📨 MCP request received")
     
     try:
@@ -33,7 +34,7 @@ async def handle_mcp_request(request: Request):
             return await handle_tools_list(request_id)
         
         elif method == "tools/call":
-            return await handle_tools_call(request_id, params)
+            return await handle_tools_call(request_id, params, request)
         
         else:
             print(f"❌ Unknown method: {method}")
@@ -80,9 +81,9 @@ async def handle_initialize(request_id):
             },
             "serverInfo": {
                 "name": "iManage Deep Research MCP Server",
-                "version": "1.0.0"
+                "version": "2.1.0"
             },
-            "instructions": "This server provides access to iManage document search and retrieval. No authentication is required as the server handles iManage authentication internally."
+            "instructions": "This server provides access to iManage document search and retrieval with user authentication. Users will be authenticated to ensure they only access documents they have permission to view."
         }
     }
 
@@ -93,7 +94,7 @@ async def handle_auth_list(request_id):
         "jsonrpc": "2.0",
         "id": request_id,
         "result": {
-            "authMethods": []  # Empty array means no auth required
+            "authMethods": []  # Empty array means auth handled externally via OAuth
         }
     }
 
@@ -105,7 +106,7 @@ async def handle_auth_status(request_id):
         "id": request_id,
         "result": {
             "authenticated": True,
-            "method": "none"
+            "method": "oauth"
         }
     }
 
@@ -124,7 +125,8 @@ async def handle_tools_list(request_id):
                                   "For keyword search, use terms that might appear in document content. "
                                   "The system will automatically determine the best search strategy. "
                                   "You can search for legal documents, contracts, memos, emails, and other business documents. "
-                                  "Use specific terms like client names, matter names, document types, or legal concepts.",
+                                  "Use specific terms like client names, matter names, document types, or legal concepts. "
+                                  "Results will only include documents that the authenticated user has permission to access.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -139,7 +141,8 @@ async def handle_tools_list(request_id):
                 {
                     "name": "fetch",
                     "description": "Retrieve the complete content and metadata of a specific document by its ID. "
-                                  "Use this after finding documents with search to get the full document content for analysis.",
+                                  "Use this after finding documents with search to get the full document content for analysis. "
+                                  "Only documents that the authenticated user has permission to access will be returned.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -152,18 +155,18 @@ async def handle_tools_list(request_id):
         }
     }
 
-async def handle_tools_call(request_id, params):
-    """Handle tools call request"""
+async def handle_tools_call(request_id, params, request: Request):
+    """Handle tools call request with user context"""
     tool_name = params.get("name")
     arguments = params.get("arguments", {})
     
     print(f"🔧 Tool call: {tool_name} with args: {arguments}")
     
     if tool_name == "search":
-        return await handle_search_tool(request_id, arguments)
+        return await handle_search_tool(request_id, arguments, request)
     
     elif tool_name == "fetch":
-        return await handle_fetch_tool(request_id, arguments)
+        return await handle_fetch_tool(request_id, arguments, request)
     
     else:
         print(f"❌ Unknown tool: {tool_name}")
@@ -176,17 +179,17 @@ async def handle_tools_call(request_id, params):
             }
         }
 
-async def handle_search_tool(request_id, arguments):
-    """Handle search tool call"""
+async def handle_search_tool(request_id, arguments, request: Request):
+    """Handle search tool call with user context"""
     try:
         query = arguments.get("query", "")
         if not query:
             raise ValueError("Query parameter is required")
         
-        print(f"🔍 Searching for: '{query}'")
+        print(f"🔍 Searching for: '{query}' (with user context)")
         
-        # Perform combined search using the search service
-        final_results = await perform_combined_search(query, limit_per_type=10)
+        # Perform combined search using the search service with user context
+        final_results = await perform_combined_search(query, limit_per_type=10, request=request)
         
         if not final_results:
             # Return a helpful message if no results found
@@ -199,7 +202,7 @@ async def handle_search_tool(request_id, arguments):
                             "type": "text",
                             "text": json.dumps({
                                 "results": [],
-                                "message": f"No documents found for query: '{query}'. Try different search terms or check if documents exist in the library."
+                                "message": f"No documents found for query: '{query}'. This could be because no documents match your search terms, or you don't have permission to access documents containing these terms."
                             }, indent=2)
                         }
                     ]
@@ -216,7 +219,7 @@ async def handle_search_tool(request_id, arguments):
                 "url": result.url
             })
         
-        print(f"✅ Returning {len(results_data)} search results")
+        print(f"✅ Returning {len(results_data)} search results (user-filtered)")
         
         return {
             "jsonrpc": "2.0",
@@ -242,19 +245,19 @@ async def handle_search_tool(request_id, arguments):
             }
         }
 
-async def handle_fetch_tool(request_id, arguments):
-    """Handle fetch tool call"""
+async def handle_fetch_tool(request_id, arguments, request: Request):
+    """Handle fetch tool call with user context"""
     try:
         doc_id = arguments.get("id", "")
         if not doc_id:
             raise ValueError("Document ID parameter is required")
         
-        print(f"📥 Fetching document: {doc_id}")
+        print(f"📥 Fetching document: {doc_id} (with user context)")
         
-        # Fetch document using the document service
-        document = await fetch_document_content(doc_id)
+        # Fetch document using the document service with user context
+        document = await fetch_document_content(doc_id, request)
         
-        print(f"✅ Document fetched successfully")
+        print(f"✅ Document fetched successfully (user-authorized)")
         
         return {
             "jsonrpc": "2.0",

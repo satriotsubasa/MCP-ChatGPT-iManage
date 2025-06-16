@@ -194,15 +194,15 @@ async def mcp_discovery():
     """MCP discovery endpoint"""
     print("🔍 MCP discovery requested")
     
-    auth_config = {
-        "type": "oauth2" if is_user_auth_enabled() else "none"
-    }
-    
     if is_user_auth_enabled():
-        auth_config.update({
+        auth_config = {
+            "type": "oauth2",
             "authorization_url": f"{BASE_URL}/oauth/authorize",
-            "token_url": f"{BASE_URL}/oauth/token"
-        })
+            "token_url": f"{BASE_URL}/oauth/token",
+            "scopes": ["read"]
+        }
+    else:
+        auth_config = {"type": "none"}
     
     return {
         "version": "2.1.0",
@@ -271,13 +271,15 @@ async def oauth_config():
             "auth_mode": "service"
         }
     
+    # Return OAuth configuration in the exact format ChatGPT expects
     return {
+        "client_id": "mcp_client",  # ChatGPT will use this
         "authorization_url": f"{BASE_URL}/oauth/authorize",
         "token_url": f"{BASE_URL}/oauth/token", 
         "userinfo_url": f"{BASE_URL}/oauth/userinfo",
         "scopes": ["read"],
-        "client_id_required": True,
-        "client_secret_required": True
+        "response_type": "code",
+        "grant_type": "authorization_code"
     }
 
 # ---- Legacy OAuth Endpoints for Backward Compatibility ----
@@ -399,6 +401,6 @@ if __name__ == "__main__":
     uvicorn.run(
         app, 
         host="0.0.0.0", 
-        port=int(os.getenv("PORT", 10000)),
+        port=int(os.getenv("PORT", 8000)),
         log_level="info"
     )

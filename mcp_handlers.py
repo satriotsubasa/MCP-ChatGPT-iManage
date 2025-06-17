@@ -36,6 +36,9 @@ async def handle_mcp_request(request: Request):
         elif method == "tools/call":
             return await handle_tools_call(request_id, params, request)
         
+        elif method == "notifications/initialized":
+            return await handle_initialized_notification(request_id)
+        
         else:
             print(f"❌ Unknown method: {method}")
             return {
@@ -154,6 +157,16 @@ async def handle_tools_list(request_id):
             ]
         }
     }
+
+async def handle_initialized_notification(request_id):
+    """Handle MCP initialized notification"""
+    print("📢 Initialized notification received")
+    # Notifications don't require a response, but we'll return a simple acknowledgment
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": {}
+    } if request_id else None
 
 async def handle_tools_call(request_id, params, request: Request):
     """Handle tools call request with user context"""

@@ -88,15 +88,15 @@ async def oauth_config():
             "auth_mode": "service"
         }
     
-    # Return OAuth configuration in the format ChatGPT expects
+    # Return OAuth configuration in the exact format ChatGPT expects
     return {
+        "client_id": "mcp_client",
         "authorization_url": f"{BASE_URL}/oauth/authorize",
         "token_url": f"{BASE_URL}/oauth/token",
         "userinfo_url": f"{BASE_URL}/oauth/userinfo",
         "scopes": ["read"],
         "response_type": "code",
-        "grant_type": "authorization_code",
-        "client_credentials_required": True
+        "grant_type": "authorization_code"
     }
 
 # ---- Core MCP Discovery - This is what ChatGPT reads ----
@@ -311,9 +311,13 @@ if __name__ == "__main__":
     
     print("🚀 Starting iManage Deep Research MCP Server (Simplified OAuth)...")
     
+    # Use PORT environment variable (Render.com sets this automatically)
+    port = int(os.getenv("PORT", 10000))
+    print(f"🌐 Server will bind to port: {port}")
+    
     uvicorn.run(
         app, 
         host="0.0.0.0", 
-        port=int(os.getenv("PORT", 8000)),
+        port=port,
         log_level="info"
     )

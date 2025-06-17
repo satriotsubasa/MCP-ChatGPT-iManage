@@ -178,11 +178,95 @@ async def mcp_discovery():
         }
     }
 
+# ---- Pre-authentication Helper ----
+@app.get("/oauth/prepare")
+async def oauth_prepare(request: Request):
+    """Pre-establish session with iManage to potentially bypass SSO auto-redirect"""
+    print("🔄 Preparing iManage session to bypass SSO auto-redirect")
+    
+    # Get the original authorization parameters
+    params = dict(request.query_params)
+    
+    return HTMLResponse(f"""
+    <html>
+        <head>
+            <title>Preparing iManage Authentication</title>
+            <style>
+                body {{ 
+                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    margin: 0; padding: 0; min-height: 100vh;
+                    display: flex; align-items: center; justify-content: center;
+                }}
+                .container {{ 
+                    background: white; border-radius: 15px; 
+                    padding: 40px; box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+                    max-width: 500px; width: 90%; text-align: center;
+                }}
+                .spinner {{ 
+                    border: 4px solid #f3f3f3; border-top: 4px solid #667eea;
+                    border-radius: 50%; width: 40px; height: 40px;
+                    animation: spin 1s linear infinite; margin: 20px auto;
+                }}
+                @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
+                .btn {{ 
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white; padding: 14px 30px; border: none; 
+                    border-radius: 8px; font-size: 16px; cursor: pointer;
+                    text-decoration: none; display: inline-block; margin: 10px;
+                }}
+                .btn:hover {{ transform: translateY(-2px); }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h2>🔐 Preparing iManage Authentication</h2>
+                <div class="spinner"></div>
+                <p>Setting up session to show iManage login page...</p>
+                
+                <div style="margin-top: 30px;">
+                    <p><strong>If you see Microsoft SSO login:</strong></p>
+                    <p>Try refreshing the page or clicking "Use different account" to see the iManage login form.</p>
+                    
+                    <a href="{AUTH_URL_PREFIX}/oauth2/authorize?{urlencode(params)}" class="btn" target="_blank">
+                        🚀 Continue to iManage Login
+                    </a>
+                    
+                    <br><br>
+                    <a href="javascript:history.back()" class="btn" style="background: #6c757d;">
+                        ← Back
+                    </a>
+                </div>
+            </div>
+            
+            <script>
+                // Try to pre-establish session with iManage
+                setTimeout(function() {{
+                    // Create hidden iframe to "touch" iManage server
+                    var iframe = document.createElement('iframe');
+                    iframe.style.display = 'none';
+                    iframe.src = '{AUTH_URL_PREFIX}/ping';  // Ping iManage server
+                    document.body.appendChild(iframe);
+                    
+                    setTimeout(function() {{
+                        document.body.removeChild(iframe);
+                    }}, 2000);
+                }}, 1000);
+                
+                // Auto-redirect after 5 seconds
+                setTimeout(function() {{
+                    window.location.href = '{AUTH_URL_PREFIX}/oauth2/authorize?{urlencode(params)}';
+                }}, 5000);
+            </script>
+        </body>
+    </html>
+    """)
+
 # ---- OAuth Endpoints ----
 @app.get("/oauth/authorize")
 async def oauth_authorize_endpoint(request: Request):
-    """OAuth authorization endpoint - redirect to iManage OAuth (which then goes to SAML SSO)"""
-    print("🔐 OAuth authorization requested - will redirect to iManage OAuth + SAML SSO")
+    """OAuth authorization endpoint with multiple strategies to show iManage login"""
+    print("🔐 OAuth authorization requested - trying to show iManage login page")
     
     if not is_user_auth_enabled():
         raise HTTPException(status_code=404, detail="User authentication not enabled")
@@ -195,9 +279,10 @@ async def oauth_authorize_endpoint(request: Request):
     code_challenge = params.get("code_challenge")
     code_challenge_method = params.get("code_challenge_method")
     scope = params.get("scope", "read")
+    strategy = params.get("strategy", "auto")  # Allow strategy selection
     
     print(f"🔍 ChatGPT OAuth params: client_id={client_id}, redirect_uri={redirect_uri}, state={state}")
-    print(f"🔍 PKCE: challenge={code_challenge[:20] if code_challenge else None}..., method={code_challenge_method}")
+    print(f"🔍 Strategy: {strategy}")
     
     # Store the ChatGPT request for later use
     session_id = secrets.token_urlsafe(32)
@@ -212,21 +297,85 @@ async def oauth_authorize_endpoint(request: Request):
         "expires_at": time.time() + 600  # 10 minutes
     }
     
-    # Build iManage OAuth authorization URL (which will redirect to SAML SSO)
-    imanage_oauth_params = {
+    # Build base iManage OAuth parameters
+    base_params = {
         "response_type": "code",
-        "client_id": CLIENT_ID,  # Your iManage OAuth client ID
-        "redirect_uri": f"{BASE_URL}/oauth/callback",  # Your server's callback
-        "scope": "admin",  # iManage scope
-        "state": session_id  # Use our session ID as state for iManage
+        "client_id": CLIENT_ID,
+        "redirect_uri": f"{BASE_URL}/oauth/callback",
+        "scope": "admin",
+        "state": session_id
     }
     
-    imanage_oauth_url = f"{AUTH_URL_PREFIX}/oauth2/authorize?" + urlencode(imanage_oauth_params)
+    if strategy == "prepare":
+        # Strategy: Pre-establish session first
+        prepare_params = dict(base_params)
+        prepare_params.update(params)  # Include original params
+        return RedirectResponse(url=f"/oauth/prepare?" + urlencode(prepare_params))
     
-    print(f"🔀 Redirecting to iManage OAuth (which will redirect to SAML SSO): {imanage_oauth_url}")
+    elif strategy == "choice":
+        # Strategy: Show authentication choice page
+        return HTMLResponse(f"""
+        <html>
+            <head>
+                <title>iManage Authentication Options</title>
+                <style>
+                    body {{ 
+                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        margin: 0; padding: 0; min-height: 100vh;
+                        display: flex; align-items: center; justify-content: center;
+                    }}
+                    .container {{ 
+                        background: white; border-radius: 15px; 
+                        padding: 40px; box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+                        max-width: 500px; width: 90%; text-align: center;
+                    }}
+                    .btn {{ 
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        color: white; padding: 14px 30px; border: none; 
+                        border-radius: 8px; font-size: 16px; cursor: pointer;
+                        text-decoration: none; display: block; margin: 15px auto;
+                        max-width: 300px;
+                    }}
+                    .btn:hover {{ transform: translateY(-2px); }}
+                    .btn-secondary {{ background: #6c757d; }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h2>🔐 Choose Authentication Method</h2>
+                    <p>How would you like to log in to iManage?</p>
+                    
+                    <a href="{AUTH_URL_PREFIX}/oauth2/authorize?" + urlencode(base_params) + "&prompt=login&force_authn=true" class="btn">
+                        📧 iManage Email Login
+                    </a>
+                    
+                    <a href="{AUTH_URL_PREFIX}/oauth2/authorize?" + urlencode(base_params) class="btn btn-secondary">
+                        🏢 Company SSO Login
+                    </a>
+                    
+                    <div style="margin-top: 30px; font-size: 14px; color: #666;">
+                        <p>Choose "iManage Email Login" to enter your email directly on the iManage login page.</p>
+                    </div>
+                </div>
+            </body>
+        </html>
+        """)
     
-    # Redirect user to iManage OAuth (which will then redirect to SAML SSO)
-    return RedirectResponse(url=imanage_oauth_url)
+    else:
+        # Default strategy: Try to bypass SSO auto-redirect
+        imanage_oauth_params = dict(base_params)
+        imanage_oauth_params.update({
+            "prompt": "login",
+            "max_age": "0",
+            "force_authn": "true",
+            "explicit_auth": "true"
+        })
+        
+        imanage_oauth_url = f"{AUTH_URL_PREFIX}/oauth2/authorize?" + urlencode(imanage_oauth_params)
+        print(f"🔀 Redirecting to iManage OAuth (bypass SSO): {imanage_oauth_url}")
+        
+        return RedirectResponse(url=imanage_oauth_url)
 
 @app.get("/oauth/callback")
 async def oauth_callback_endpoint(request: Request):

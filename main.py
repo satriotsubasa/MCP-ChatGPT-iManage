@@ -7,7 +7,7 @@ import time
 import os
 import logging
 import asyncio
-from fastapi import FastAPI, HTTPException, Request, Form
+from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -46,6 +46,18 @@ app.add_middleware(
 
 # Include test router
 app.include_router(test_router)
+
+# ---- CORS Preflight Handler ----
+@app.options("/")
+async def options_handler():
+    """Handle CORS preflight requests for MCP endpoint"""
+    print("🔄 CORS preflight request for MCP endpoint")
+    return {
+        "Allow": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization"
+    }
 
 # ---- Main MCP Protocol Handler ----
 @app.post("/")
@@ -258,17 +270,18 @@ async def oauth_token_endpoint(
     code: str = Form(None),
     client_id: str = Form(...),
     client_secret: str = Form(...),
-    redirect_uri: str = Form(None)
+    redirect_uri: str = Form(None),
+    code_verifier: str = Form(None)  # PKCE support
 ):
-    """OAuth token endpoint - simplified"""
-    print(f"🔐 OAuth token request: grant_type={grant_type}, code={code}")
+    """OAuth token endpoint - simplified with PKCE support"""
+    print(f"🔐 OAuth token request: grant_type={grant_type}, code={code}, pkce={code_verifier is not None}")
     
     if grant_type == "authorization_code":
         if not code:
             raise HTTPException(status_code=400, detail="Missing authorization code")
         
         # For simplified implementation, just return a basic token
-        # In real implementation, you'd validate the code and return proper tokens
+        # In real implementation, you'd validate the code and PKCE verifier
         return {
             "access_token": f"mcp_token_{code}",
             "token_type": "bearer",
@@ -290,6 +303,28 @@ async def oauth_userinfo_endpoint(request: Request):
         "name": "iManage User",
         "email": "user@imanage.com",
         "preferred_username": "imanage_user"
+    }
+
+# ---- MCP Test Endpoint ----
+@app.post("/test/mcp")
+async def test_mcp():
+    """Test MCP protocol response"""
+    print("🧪 MCP test request")
+    
+    # Return a basic MCP response to test protocol compliance
+    return {
+        "jsonrpc": "2.0",
+        "id": "test",
+        "result": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {
+                "tools": {}
+            },
+            "serverInfo": {
+                "name": "iManage Deep Research MCP Server",
+                "version": "2.1.0"
+            }
+        }
     }
 
 # ---- Health Check ----
@@ -333,7 +368,7 @@ if __name__ == "__main__":
     print("🚀 Starting iManage Deep Research MCP Server (Simplified OAuth)...")
     
     # Use PORT environment variable (Render.com sets this automatically)
-    port = int(os.getenv("PORT", 8000))
+    port = int(os.getenv("PORT", 10000))
     print(f"🌐 Server will bind to port: {port}")
     
     uvicorn.run(

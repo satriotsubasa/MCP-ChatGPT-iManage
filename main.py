@@ -7,12 +7,13 @@ import time
 import os
 import logging
 import asyncio
+from urllib.parse import urlencode
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 # Import our modules
-from config import validate_config, CUSTOMER_ID, LIBRARY_ID, is_user_auth_enabled, AUTH_MODE, BASE_URL
+from config import validate_config, CUSTOMER_ID, LIBRARY_ID, is_user_auth_enabled, AUTH_MODE, BASE_URL, CLIENT_ID, AUTH_URL_PREFIX
 from auth import get_token, user_auth_manager
 from mcp_handlers import handle_mcp_request
 from test_endpoints import router as test_router
@@ -171,96 +172,179 @@ async def mcp_discovery():
 # ---- Simple OAuth Endpoints ----
 @app.get("/oauth/authorize")
 async def oauth_authorize_endpoint(request: Request):
-    """OAuth authorization endpoint - simplified"""
+    """OAuth authorization endpoint - redirect to iManage"""
     print("🔐 OAuth authorization requested")
     
     if not is_user_auth_enabled():
         raise HTTPException(status_code=404, detail="User authentication not enabled")
     
-    # Get parameters
+    # Get parameters from ChatGPT
     params = dict(request.query_params)
     client_id = params.get("client_id")
     redirect_uri = params.get("redirect_uri")
     state = params.get("state")
+    code_challenge = params.get("code_challenge")
+    code_challenge_method = params.get("code_challenge_method")
     
     print(f"🔍 OAuth params: client_id={client_id}, redirect_uri={redirect_uri}, state={state}")
     
-    # For simplified implementation, return a simple login form
-    return HTMLResponse(f"""
-    <html>
-        <head>
-            <title>iManage Authentication</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; }}
-                .form {{ background: #f5f5f5; padding: 20px; border-radius: 10px; max-width: 400px; margin: 0 auto; }}
-                input {{ margin: 10px; padding: 10px; width: 200px; }}
-                button {{ background: #007cba; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; }}
-            </style>
-        </head>
-        <body>
-            <h2>🔐 iManage Authentication</h2>
-            <div class="form">
-                <p>Please log in with your iManage credentials:</p>
-                <form method="post" action="/oauth/authenticate">
-                    <input type="hidden" name="redirect_uri" value="{redirect_uri or ''}" />
-                    <input type="hidden" name="state" value="{state or ''}" />
-                    <input type="text" name="username" placeholder="Username" required /><br>
-                    <input type="password" name="password" placeholder="Password" required /><br>
-                    <button type="submit">🔓 Login</button>
-                </form>
-            </div>
-        </body>
-    </html>
-    """)
+    # Store the original ChatGPT request for later use
+    if state:
+        user_auth_manager.oauth_states[state] = {
+            "redirect_uri": redirect_uri,
+            "client_id": client_id,
+            "code_challenge": code_challenge,
+            "code_challenge_method": code_challenge_method,
+            "created_at": time.time(),
+            "expires_at": time.time() + 600  # 10 minutes
+        }
+    
+    # Build iManage OAuth authorization URL
+    imanage_auth_params = {
+        "response_type": "code",
+        "client_id": CLIENT_ID,  # Your iManage client ID
+        "redirect_uri": f"{BASE_URL}/oauth/callback",  # Your server's callback
+        "scope": "admin",
+        "state": state  # Pass through the state from ChatGPT
+    }
+    
+    # Build the query string
+    from urllib.parse import urlencode
+    query_string = urlencode(imanage_auth_params)
+    imanage_auth_url = f"{AUTH_URL_PREFIX}/oauth2/authorize?{query_string}"
+    
+    print(f"🔀 Redirecting to iManage: {imanage_auth_url}")
+    
+    # Redirect user to official iManage login page
+    return RedirectResponse(url=imanage_auth_url)
 
-@app.post("/oauth/authenticate")
-async def oauth_authenticate(
-    username: str = Form(...),
-    password: str = Form(...),
-    redirect_uri: str = Form(""),
-    state: str = Form("")
-):
-    """Handle OAuth authentication form submission"""
-    print(f"🔐 OAuth authentication attempt for user: {username}")
+@app.get("/oauth/callback")
+async def oauth_callback_endpoint(request: Request):
+    """OAuth callback from iManage - exchange code and redirect back to ChatGPT"""
+    print("🔄 OAuth callback from iManage received")
+    
+    params = dict(request.query_params)
+    code = params.get("code")  # Authorization code from iManage
+    state = params.get("state")  # State from original ChatGPT request
+    error = params.get("error")
+    
+    if error:
+        print(f"❌ OAuth error from iManage: {error}")
+        return HTMLResponse(f"""
+        <html>
+            <body>
+                <h2>Authentication Error</h2>
+                <p>iManage authentication failed: {error}</p>
+                <p>Please close this window and try again.</p>
+            </body>
+        </html>
+        """, status_code=400)
+    
+    if not code or not state:
+        print("❌ Missing code or state from iManage callback")
+        return HTMLResponse("""
+        <html>
+            <body>
+                <h2>Authentication Error</h2>
+                <p>Missing authorization code or state from iManage.</p>
+                <p>Please close this window and try again.</p>
+            </body>
+        </html>
+        """, status_code=400)
+    
+    # Get the original ChatGPT request details
+    if state not in user_auth_manager.oauth_states:
+        print(f"❌ Invalid or expired state: {state}")
+        return HTMLResponse("""
+        <html>
+            <body>
+                <h2>Authentication Error</h2>
+                <p>Invalid or expired authentication session.</p>
+                <p>Please close this window and try again.</p>
+            </body>
+        </html>
+        """, status_code=400)
+    
+    chatgpt_request = user_auth_manager.oauth_states[state]
     
     try:
-        # Authenticate user with iManage
-        session = await user_auth_manager.authenticate_user(username, password)
-        session_id = list(user_auth_manager.user_sessions.keys())[-1]
+        # Exchange iManage authorization code for access token
+        from config import AUTH_URL_PREFIX, CLIENT_ID, CLIENT_SECRET
+        import httpx
         
-        # Generate authorization code (simplified)
-        auth_code = f"auth_{session_id[:16]}"
+        token_url = f"{AUTH_URL_PREFIX}/oauth2/token"
+        token_data = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+            "redirect_uri": f"{BASE_URL}/oauth/callback"
+        }
         
-        print(f"✅ Authentication successful, redirecting with code: {auth_code}")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            token_response = await client.post(
+                token_url, 
+                data=token_data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"}
+            )
+            token_response.raise_for_status()
+            token_info = token_response.json()
+        
+        # Store user session (optional - for your internal use)
+        user_token = token_info["access_token"]
+        print(f"✅ Successfully obtained iManage access token")
+        
+        # Generate authorization code for ChatGPT
+        chatgpt_auth_code = f"chatgpt_{state[:16]}"
+        
+        # Clean up state
+        del user_auth_manager.oauth_states[state]
         
         # Redirect back to ChatGPT with authorization code
-        if redirect_uri:
-            separator = "&" if "?" in redirect_uri else "?"
-            redirect_url = f"{redirect_uri}{separator}code={auth_code}&state={state}"
+        chatgpt_redirect_uri = chatgpt_request["redirect_uri"]
+        if chatgpt_redirect_uri:
+            separator = "&" if "?" in chatgpt_redirect_uri else "?"
+            redirect_url = f"{chatgpt_redirect_uri}{separator}code={chatgpt_auth_code}&state={state}"
+            
+            print(f"🔀 Redirecting back to ChatGPT: {redirect_url}")
             return RedirectResponse(url=redirect_url)
         else:
-            # If no redirect URI, show success page
+            # Fallback success page
             return HTMLResponse(f"""
             <html>
+                <head>
+                    <title>Authentication Successful</title>
+                    <style>
+                        body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; }}
+                        .success {{ color: green; }}
+                    </style>
+                </head>
                 <body>
-                    <h2>✅ Authentication Successful!</h2>
-                    <p>Authorization Code: {auth_code}</p>
-                    <p>You can now close this window.</p>
+                    <h2 class="success">✅ Authentication Successful!</h2>
+                    <p>You have successfully logged in to iManage.</p>
+                    <p>Authorization Code: {chatgpt_auth_code}</p>
+                    <p>You can now close this window and return to ChatGPT.</p>
+                    <script>
+                        // Auto-close after 3 seconds
+                        setTimeout(function() {{
+                            window.close();
+                        }}, 3000);
+                    </script>
                 </body>
             </html>
             """)
         
     except Exception as e:
-        print(f"❌ Authentication failed: {str(e)}")
+        print(f"❌ Failed to exchange iManage authorization code: {str(e)}")
         return HTMLResponse(f"""
         <html>
             <body>
-                <h2>❌ Authentication Failed</h2>
-                <p>Error: {str(e)}</p>
-                <p><a href="javascript:history.back()">Try Again</a></p>
+                <h2>Authentication Failed</h2>
+                <p>Failed to complete authentication with iManage: {str(e)}</p>
+                <p>Please close this window and try again.</p>
             </body>
         </html>
-        """, status_code=401)
+        """, status_code=500)
 
 @app.post("/oauth/token")
 async def oauth_token_endpoint(

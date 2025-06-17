@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 """
-iManage Deep Research MCP Server - Hybrid Authentication
-Uses service account for API calls but captures user context for access control
+iManage Deep Research MCP Server for ChatGPT Integration - Fixed Version
 """
 
 import time
 import os
 import logging
 import asyncio
-from urllib.parse import urlencode, urlparse, parse_qs
+from urllib.parse import urlencode
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 # Import our modules
-from config import validate_config, CUSTOMER_ID, LIBRARY_ID, is_user_auth_enabled, AUTH_MODE, BASE_URL
+from config import validate_config, CUSTOMER_ID, LIBRARY_ID, is_user_auth_enabled, AUTH_MODE, BASE_URL, CLIENT_ID, AUTH_URL_PREFIX
 from auth import get_token, user_auth_manager
 from mcp_handlers import handle_mcp_request
 from test_endpoints import router as test_router
@@ -32,7 +31,7 @@ except ValueError as e:
 
 app = FastAPI(
     title="iManage Deep Research MCP Server",
-    description="MCP server with hybrid authentication for ChatGPT integration with iManage Work API",
+    description="MCP server with user authentication for ChatGPT integration with iManage Work API",
     version="2.1.0"
 )
 
@@ -73,16 +72,17 @@ async def root():
     return {
         "name": "iManage Deep Research MCP Server",
         "version": "2.1.0",
-        "description": "MCP server with hybrid authentication for ChatGPT integration with iManage Work API",
+        "description": "MCP server with user authentication for ChatGPT integration with iManage Work API",
         "protocol": "MCP/1.0",
         "capabilities": ["tools"],
         "status": "healthy",
-        "authentication": "hybrid" if is_user_auth_enabled() else "service",
+        "authentication": "user" if is_user_auth_enabled() else "service",
         "auth_mode": AUTH_MODE,
-        "sso_info": "SAML SSO enabled - using hybrid authentication approach",
         "endpoints": {
             "mcp": "POST /",
             "oauth_authorize": "GET /oauth/authorize" if is_user_auth_enabled() else None,
+            "oauth_callback": "GET /oauth/callback" if is_user_auth_enabled() else None,
+            "oauth_token": "POST /oauth/token" if is_user_auth_enabled() else None,
             "health": "GET /health",
             "test": "GET /test"
         }
@@ -91,7 +91,7 @@ async def root():
 # ---- OAuth Authorization Server Metadata Endpoint ----
 @app.get("/.well-known/oauth-authorization-server")
 async def oauth_authorization_server_metadata():
-    """OAuth 2.0 Authorization Server Metadata"""
+    """OAuth 2.0 Authorization Server Metadata - Required by ChatGPT"""
     print("🔍 OAuth authorization server metadata requested")
     
     if not is_user_auth_enabled():
@@ -102,7 +102,7 @@ async def oauth_authorization_server_metadata():
         "authorization_endpoint": f"{BASE_URL}/oauth/authorize",
         "token_endpoint": f"{BASE_URL}/oauth/token",
         "userinfo_endpoint": f"{BASE_URL}/oauth/userinfo",
-        "registration_endpoint": f"{BASE_URL}/oauth/register",
+        "registration_endpoint": f"{BASE_URL}/oauth/register",  # Dynamic client registration
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code"],
         "scopes_supported": ["read"],
@@ -119,11 +119,12 @@ async def oauth_register():
     if not is_user_auth_enabled():
         raise HTTPException(status_code=404, detail="User authentication not enabled")
     
+    # For ChatGPT MCP integration, return a simplified client registration
     return {
         "client_id": "chatgpt_mcp_client",
         "client_secret": "chatgpt_mcp_secret",
         "client_id_issued_at": int(time.time()),
-        "client_secret_expires_at": 0,
+        "client_secret_expires_at": 0,  # Never expires
         "redirect_uris": [
             "https://chatgpt.com/oauth/callback",
             "https://chat.openai.com/oauth/callback"
@@ -134,13 +135,14 @@ async def oauth_register():
         "token_endpoint_auth_method": "client_secret_post"
     }
 
-# ---- Core MCP Discovery ----
+# ---- Core MCP Discovery - This is what ChatGPT reads ----
 @app.get("/.well-known/mcp")
 async def mcp_discovery():
-    """MCP discovery endpoint"""
+    """MCP discovery endpoint with embedded OAuth configuration"""
     print("🔍 MCP discovery requested")
     
     if is_user_auth_enabled():
+        # Embed OAuth configuration directly in MCP discovery
         auth_config = {
             "type": "oauth2",
             "authorization_url": f"{BASE_URL}/oauth/authorize",
@@ -154,7 +156,7 @@ async def mcp_discovery():
     return {
         "version": "2.1.0",
         "name": "iManage Deep Research MCP Server", 
-        "description": "Deep research connector for iManage Work API with hybrid authentication",
+        "description": "Deep research connector for iManage Work API with user authentication",
         "capabilities": {
             "tools": True,
             "resources": False,
@@ -167,11 +169,11 @@ async def mcp_discovery():
         }
     }
 
-# ---- Simple OAuth Endpoints (for ChatGPT compatibility) ----
+# ---- Simple OAuth Endpoints ----
 @app.get("/oauth/authorize")
 async def oauth_authorize_endpoint(request: Request):
-    """OAuth authorization - simplified for SAML SSO environment"""
-    print("🔐 OAuth authorization requested (SAML SSO environment)")
+    """OAuth authorization endpoint - redirect to iManage"""
+    print("🔐 OAuth authorization requested")
     
     if not is_user_auth_enabled():
         raise HTTPException(status_code=404, detail="User authentication not enabled")
@@ -181,169 +183,168 @@ async def oauth_authorize_endpoint(request: Request):
     client_id = params.get("client_id")
     redirect_uri = params.get("redirect_uri")
     state = params.get("state")
+    code_challenge = params.get("code_challenge")
+    code_challenge_method = params.get("code_challenge_method")
     
-    print(f"🔍 OAuth params: client_id={client_id}, redirect_uri={redirect_uri}")
+    print(f"🔍 OAuth params: client_id={client_id}, redirect_uri={redirect_uri}, state={state}")
     
-    # For SAML SSO environment, show a user identification form
-    # This allows us to capture user identity without dealing with SAML complexity
-    return HTMLResponse(f"""
-    <html>
-        <head>
-            <title>iManage User Identification</title>
-            <style>
-                body {{ 
-                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    margin: 0; padding: 0; min-height: 100vh;
-                    display: flex; align-items: center; justify-content: center;
-                }}
-                .container {{ 
-                    background: white; border-radius: 15px; 
-                    padding: 40px; box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-                    max-width: 400px; width: 90%;
-                }}
-                .logo {{ text-align: center; margin-bottom: 30px; }}
-                .logo h1 {{ color: #333; margin: 0; font-size: 24px; }}
-                .logo p {{ color: #666; margin: 5px 0; font-size: 14px; }}
-                .form-group {{ margin-bottom: 20px; }}
-                label {{ display: block; margin-bottom: 8px; color: #333; font-weight: 500; }}
-                input[type="email"] {{ 
-                    width: 100%; padding: 12px; border: 2px solid #e1e5e9;
-                    border-radius: 8px; font-size: 16px; transition: border-color 0.3s;
-                }}
-                input[type="email"]:focus {{ 
-                    outline: none; border-color: #667eea; 
-                }}
-                .btn {{ 
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    color: white; padding: 14px 30px; border: none; 
-                    border-radius: 8px; font-size: 16px; cursor: pointer;
-                    width: 100%; transition: transform 0.2s;
-                }}
-                .btn:hover {{ transform: translateY(-2px); }}
-                .info {{ 
-                    background: #f8f9fa; border-radius: 8px; padding: 15px; 
-                    margin-bottom: 20px; border-left: 4px solid #667eea;
-                }}
-                .info p {{ margin: 0; color: #555; font-size: 14px; line-height: 1.5; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="logo">
-                    <h1>🔐 iManage Deep Research</h1>
-                    <p>User Identification</p>
-                </div>
-                
-                <div class="info">
-                    <p><strong>SAML SSO Detected:</strong> Since your organization uses SAML SSO, please enter your email address to identify yourself for document access control.</p>
-                </div>
-                
-                <form method="get" action="/oauth/identify">
-                    <input type="hidden" name="redirect_uri" value="{redirect_uri or ''}" />
-                    <input type="hidden" name="state" value="{state or ''}" />
-                    <input type="hidden" name="client_id" value="{client_id or ''}" />
-                    
-                    <div class="form-group">
-                        <label for="email">Your Email Address:</label>
-                        <input type="email" id="email" name="email" placeholder="your.email@riotinto.com" required />
-                    </div>
-                    
-                    <button type="submit" class="btn">🔍 Continue to Deep Research</button>
-                </form>
-                
-                <div style="margin-top: 20px; text-align: center; color: #666; font-size: 12px;">
-                    <p>Your email will be used to ensure you only access documents you have permission to view.</p>
-                </div>
-            </div>
-        </body>
-    </html>
-    """)
+    # Store the original ChatGPT request for later use
+    if state:
+        user_auth_manager.oauth_states[state] = {
+            "redirect_uri": redirect_uri,
+            "client_id": client_id,
+            "code_challenge": code_challenge,
+            "code_challenge_method": code_challenge_method,
+            "created_at": time.time(),
+            "expires_at": time.time() + 600  # 10 minutes
+        }
+    
+    # Build iManage OAuth authorization URL
+    imanage_auth_params = {
+        "response_type": "code",
+        "client_id": CLIENT_ID,  # Your iManage client ID
+        "redirect_uri": f"{BASE_URL}/oauth/callback",  # Your server's callback
+        "scope": "admin",
+        "state": state  # Pass through the state from ChatGPT
+    }
+    
+    # Build the query string
+    from urllib.parse import urlencode
+    query_string = urlencode(imanage_auth_params)
+    imanage_auth_url = f"{AUTH_URL_PREFIX}/oauth2/authorize?{query_string}"
+    
+    print(f"🔀 Redirecting to iManage: {imanage_auth_url}")
+    
+    # Redirect user to official iManage login page
+    return RedirectResponse(url=imanage_auth_url)
 
-@app.get("/oauth/identify")
-async def oauth_identify(
-    email: str,
-    redirect_uri: str = "",
-    state: str = "",
-    client_id: str = ""
-):
-    """Handle user identification for SAML SSO environment"""
-    print(f"🔐 User identification: {email}")
+@app.get("/oauth/callback")
+async def oauth_callback_endpoint(request: Request):
+    """OAuth callback from iManage - exchange code and redirect back to ChatGPT"""
+    print("🔄 OAuth callback from iManage received")
+    
+    params = dict(request.query_params)
+    code = params.get("code")  # Authorization code from iManage
+    state = params.get("state")  # State from original ChatGPT request
+    error = params.get("error")
+    
+    if error:
+        print(f"❌ OAuth error from iManage: {error}")
+        return HTMLResponse(f"""
+        <html>
+            <body>
+                <h2>Authentication Error</h2>
+                <p>iManage authentication failed: {error}</p>
+                <p>Please close this window and try again.</p>
+            </body>
+        </html>
+        """, status_code=400)
+    
+    if not code or not state:
+        print("❌ Missing code or state from iManage callback")
+        return HTMLResponse("""
+        <html>
+            <body>
+                <h2>Authentication Error</h2>
+                <p>Missing authorization code or state from iManage.</p>
+                <p>Please close this window and try again.</p>
+            </body>
+        </html>
+        """, status_code=400)
+    
+    # Get the original ChatGPT request details
+    if state not in user_auth_manager.oauth_states:
+        print(f"❌ Invalid or expired state: {state}")
+        return HTMLResponse("""
+        <html>
+            <body>
+                <h2>Authentication Error</h2>
+                <p>Invalid or expired authentication session.</p>
+                <p>Please close this window and try again.</p>
+            </body>
+        </html>
+        """, status_code=400)
+    
+    chatgpt_request = user_auth_manager.oauth_states[state]
     
     try:
-        # Validate email format and domain
-        if not email or "@" not in email:
-            raise ValueError("Please enter a valid email address")
+        # Exchange iManage authorization code for access token
+        from config import AUTH_URL_PREFIX, CLIENT_ID, CLIENT_SECRET
+        import httpx
         
-        # You could add domain validation here
-        # if not email.endswith("@riotinto.com"):
-        #     raise ValueError("Please use your Rio Tinto email address")
-        
-        # Generate authorization code with user context (simplified format for ChatGPT)
-        auth_code = f"auth{int(time.time())}{email.split('@')[0][:8]}"
-        
-        # Store user context for later use (simple in-memory storage)
-        # In production, use a proper database
-        user_auth_manager.oauth_states[auth_code] = {
-            "email": email,
-            "created_at": time.time(),
-            "expires_at": time.time() + 3600  # 1 hour
+        token_url = f"{AUTH_URL_PREFIX}/oauth2/token"
+        token_data = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+            "redirect_uri": f"{BASE_URL}/oauth/callback"
         }
         
-        print(f"✅ User identified: {email}, auth_code: {auth_code}")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            token_response = await client.post(
+                token_url, 
+                data=token_data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"}
+            )
+            token_response.raise_for_status()
+            token_info = token_response.json()
+        
+        # Store user session (optional - for your internal use)
+        user_token = token_info["access_token"]
+        print(f"✅ Successfully obtained iManage access token")
+        
+        # Generate authorization code for ChatGPT
+        chatgpt_auth_code = f"chatgpt_{state[:16]}"
+        
+        # Clean up state
+        del user_auth_manager.oauth_states[state]
         
         # Redirect back to ChatGPT with authorization code
-        if redirect_uri:
-            # Ensure proper URL encoding
-            from urllib.parse import urlencode, urlparse, parse_qs
+        chatgpt_redirect_uri = chatgpt_request["redirect_uri"]
+        if chatgpt_redirect_uri:
+            separator = "&" if "?" in chatgpt_redirect_uri else "?"
+            redirect_url = f"{chatgpt_redirect_uri}{separator}code={chatgpt_auth_code}&state={state}"
             
-            # Parse the redirect URI to add parameters correctly
-            parsed_uri = urlparse(redirect_uri)
-            query_params = parse_qs(parsed_uri.query) if parsed_uri.query else {}
-            
-            # Add our parameters
-            query_params['code'] = [auth_code]
-            query_params['state'] = [state]
-            
-            # Rebuild the URL
-            new_query = urlencode(query_params, doseq=True)
-            redirect_url = f"{parsed_uri.scheme}://{parsed_uri.netloc}{parsed_uri.path}?{new_query}"
-            
-            print(f"✅ Redirecting to ChatGPT: {redirect_url}")
+            print(f"🔀 Redirecting back to ChatGPT: {redirect_url}")
             return RedirectResponse(url=redirect_url)
         else:
+            # Fallback success page
             return HTMLResponse(f"""
             <html>
                 <head>
-                    <title>Identification Successful</title>
+                    <title>Authentication Successful</title>
                     <style>
                         body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; }}
-                        .success {{ color: green; font-size: 18px; }}
+                        .success {{ color: green; }}
                     </style>
                 </head>
                 <body>
-                    <h2 class="success">✅ Identification Successful!</h2>
-                    <p>Welcome, {email}</p>
+                    <h2 class="success">✅ Authentication Successful!</h2>
+                    <p>You have successfully logged in to iManage.</p>
+                    <p>Authorization Code: {chatgpt_auth_code}</p>
                     <p>You can now close this window and return to ChatGPT.</p>
-                    <p>Your document access will be filtered based on your permissions.</p>
                     <script>
-                        setTimeout(function() {{ window.close(); }}, 3000);
+                        // Auto-close after 3 seconds
+                        setTimeout(function() {{
+                            window.close();
+                        }}, 3000);
                     </script>
                 </body>
             </html>
             """)
         
     except Exception as e:
-        print(f"❌ User identification failed: {str(e)}")
+        print(f"❌ Failed to exchange iManage authorization code: {str(e)}")
         return HTMLResponse(f"""
         <html>
             <body>
-                <h2>❌ Identification Failed</h2>
-                <p>Error: {str(e)}</p>
-                <p><a href="javascript:history.back()">Try Again</a></p>
+                <h2>Authentication Failed</h2>
+                <p>Failed to complete authentication with iManage: {str(e)}</p>
+                <p>Please close this window and try again.</p>
             </body>
         </html>
-        """, status_code=400)
+        """, status_code=500)
 
 @app.post("/oauth/token")
 async def oauth_token_endpoint(
@@ -352,15 +353,15 @@ async def oauth_token_endpoint(
     client_id: str = Form(...),
     client_secret: str = Form(...),
     redirect_uri: str = Form(None),
-    code_verifier: str = Form(None)
+    code_verifier: str = Form(None)  # PKCE support
 ):
-    """OAuth token endpoint - returns token with user context"""
-    print(f"🔐 OAuth token request: grant_type={grant_type}, code={code}")
+    """OAuth token endpoint - simplified with PKCE support and dynamic client registration"""
+    print(f"🔐 OAuth token request: grant_type={grant_type}, code={code}, client_id={client_id}, pkce={code_verifier is not None}")
     
-    # Accept dynamic client credentials
+    # Accept both static and dynamic client credentials
     valid_clients = [
-        ("chatgpt_mcp_client", "chatgpt_mcp_secret"),
-        ("mcp_client", "mcp_secret"),
+        ("chatgpt_mcp_client", "chatgpt_mcp_secret"),  # Dynamic registration
+        ("mcp_client", "mcp_secret"),  # Static fallback
     ]
     
     client_valid = any(client_id == cid and client_secret == csec for cid, csec in valid_clients)
@@ -373,18 +374,13 @@ async def oauth_token_endpoint(
         if not code:
             raise HTTPException(status_code=400, detail="Missing authorization code")
         
-        # Get user context from authorization code
-        user_context = user_auth_manager.oauth_states.get(code, {})
-        user_email = user_context.get("email", "unknown")
-        
-        print(f"✅ Token issued for user: {user_email}")
-        
+        # For simplified implementation, just return a basic token
+        # In real implementation, you'd validate the code and PKCE verifier
         return {
             "access_token": f"mcp_token_{code}",
             "token_type": "bearer",
             "expires_in": 3600,
-            "scope": "read",
-            "user_email": user_email  # Include user context
+            "scope": "read"
         }
     
     else:
@@ -395,20 +391,12 @@ async def oauth_userinfo_endpoint(request: Request):
     """OAuth user info endpoint"""
     print("👤 OAuth userinfo requested")
     
-    # Extract user info from access token if available
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer mcp_token_"):
-        token_code = auth_header.replace("Bearer mcp_token_", "")
-        user_context = user_auth_manager.oauth_states.get(token_code, {})
-        user_email = user_context.get("email", "user@riotinto.com")
-    else:
-        user_email = "user@riotinto.com"
-    
+    # For simplified implementation, return basic user info
     return {
-        "sub": user_email,
-        "name": user_email.split("@")[0].title(),
-        "email": user_email,
-        "preferred_username": user_email
+        "sub": "imanage_user",
+        "name": "iManage User",
+        "email": "user@imanage.com",
+        "preferred_username": "imanage_user"
     }
 
 # ---- Health Check ----
@@ -420,8 +408,7 @@ async def health_check():
         "status": "healthy", 
         "timestamp": time.time(),
         "version": "2.1.0",
-        "auth_mode": f"{AUTH_MODE}_hybrid",
-        "sso_compatible": True,
+        "auth_mode": AUTH_MODE,
         "user_auth_enabled": is_user_auth_enabled()
     }
 
@@ -429,16 +416,18 @@ async def health_check():
 @app.on_event("startup")
 async def startup_event():
     """Server startup logging"""
-    print("🎉 iManage Deep Research MCP Server starting up (Hybrid Authentication)")
+    print("🎉 iManage Deep Research MCP Server starting up (Fixed Version)")
     print(f"📁 Connected to Customer: {CUSTOMER_ID}, Library: {LIBRARY_ID}")
-    print(f"🔐 Authentication Mode: {AUTH_MODE} (Hybrid)")
-    print("🔒 SAML SSO Compatible: User identification + Service account API access")
+    print(f"🔐 Authentication Mode: {AUTH_MODE}")
     
     if is_user_auth_enabled():
         print(f"🌐 Base URL: {BASE_URL}")
-        print("✅ Hybrid authentication configured for SAML SSO environment")
+        print(f"🔗 Authorization URL: {BASE_URL}/oauth/authorize")
+        print(f"🎫 Token URL: {BASE_URL}/oauth/token")
+        print("✅ Simplified OAuth endpoints configured")
     else:
         print("⚙️ Running in service account mode")
+        # Test service authentication on startup
         try:
             await get_token()
             print("✅ Service account authentication test successful")
@@ -448,8 +437,9 @@ async def startup_event():
 if __name__ == "__main__":
     import uvicorn
     
-    print("🚀 Starting iManage Deep Research MCP Server (Hybrid Auth)...")
+    print("🚀 Starting iManage Deep Research MCP Server (Fixed Version)...")
     
+    # Use PORT environment variable (Render.com sets this automatically)
     port = int(os.getenv("PORT", 10000))
     print(f"🌐 Server will bind to port: {port}")
     

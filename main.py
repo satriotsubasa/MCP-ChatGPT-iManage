@@ -239,7 +239,7 @@ async def oauth_authorize_endpoint(request: Request):
                     <p><strong>SAML SSO Detected:</strong> Since your organization uses SAML SSO, please enter your email address to identify yourself for document access control.</p>
                 </div>
                 
-                <form method="post" action="/oauth/identify">
+                <form method="get" action="/oauth/identify">
                     <input type="hidden" name="redirect_uri" value="{redirect_uri or ''}" />
                     <input type="hidden" name="state" value="{state or ''}" />
                     <input type="hidden" name="client_id" value="{client_id or ''}" />
@@ -260,12 +260,12 @@ async def oauth_authorize_endpoint(request: Request):
     </html>
     """)
 
-@app.post("/oauth/identify")
+@app.get("/oauth/identify")
 async def oauth_identify(
-    email: str = Form(...),
-    redirect_uri: str = Form(""),
-    state: str = Form(""),
-    client_id: str = Form("")
+    email: str,
+    redirect_uri: str = "",
+    state: str = "",
+    client_id: str = ""
 ):
     """Handle user identification for SAML SSO environment"""
     print(f"🔐 User identification: {email}")

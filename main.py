@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-iManage Deep Research MCP Server for ChatGPT Integration - Simplified OAuth
+iManage Deep Research MCP Server for ChatGPT Integration - Fixed Version
 """
 
 import time
@@ -16,7 +16,6 @@ from config import validate_config, CUSTOMER_ID, LIBRARY_ID, is_user_auth_enable
 from auth import get_token, user_auth_manager
 from mcp_handlers import handle_mcp_request
 from test_endpoints import router as test_router
-from oauth_endpoints import oauth_authorize, oauth_callback, oauth_token, oauth_userinfo
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -109,29 +108,6 @@ async def oauth_authorization_server_metadata():
         "code_challenge_methods_supported": ["S256"]
     }
 
-# ---- ChatGPT OAuth Configuration Endpoint ----
-@app.get("/oauth_config")
-async def oauth_config():
-    """OAuth configuration endpoint that ChatGPT calls to discover OAuth settings"""
-    print("🔗 ChatGPT OAuth config discovery requested")
-    
-    if not is_user_auth_enabled():
-        return {
-            "error": "User authentication not enabled",
-            "auth_mode": "service"
-        }
-    
-    # Return OAuth configuration in the exact format ChatGPT expects
-    return {
-        "client_id": "mcp_client",
-        "authorization_url": f"{BASE_URL}/oauth/authorize",
-        "token_url": f"{BASE_URL}/oauth/token",
-        "userinfo_url": f"{BASE_URL}/oauth/userinfo",
-        "scopes": ["read"],
-        "response_type": "code",
-        "grant_type": "authorization_code"
-    }
-
 # ---- Core MCP Discovery - This is what ChatGPT reads ----
 @app.get("/.well-known/mcp")
 async def mcp_discovery():
@@ -145,8 +121,7 @@ async def mcp_discovery():
             "authorization_url": f"{BASE_URL}/oauth/authorize",
             "token_url": f"{BASE_URL}/oauth/token",
             "userinfo_url": f"{BASE_URL}/oauth/userinfo",
-            "scopes": ["read"],
-            "client_credentials": "required"
+            "scopes": ["read"]
         }
     else:
         auth_config = {"type": "none"}
@@ -184,10 +159,7 @@ async def oauth_authorize_endpoint(request: Request):
     
     print(f"🔍 OAuth params: client_id={client_id}, redirect_uri={redirect_uri}, state={state}")
     
-    # For simplified implementation, redirect directly to iManage
-    # In a real implementation, you'd store the original request and handle the flow properly
-    
-    # For now, return a simple login form
+    # For simplified implementation, return a simple login form
     return HTMLResponse(f"""
     <html>
         <head>
@@ -305,28 +277,6 @@ async def oauth_userinfo_endpoint(request: Request):
         "preferred_username": "imanage_user"
     }
 
-# ---- MCP Test Endpoint ----
-@app.post("/test/mcp")
-async def test_mcp():
-    """Test MCP protocol response"""
-    print("🧪 MCP test request")
-    
-    # Return a basic MCP response to test protocol compliance
-    return {
-        "jsonrpc": "2.0",
-        "id": "test",
-        "result": {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {
-                "tools": {}
-            },
-            "serverInfo": {
-                "name": "iManage Deep Research MCP Server",
-                "version": "2.1.0"
-            }
-        }
-    }
-
 # ---- Health Check ----
 @app.get("/health")
 async def health_check():
@@ -344,7 +294,7 @@ async def health_check():
 @app.on_event("startup")
 async def startup_event():
     """Server startup logging"""
-    print("🎉 iManage Deep Research MCP Server starting up (Simplified OAuth)")
+    print("🎉 iManage Deep Research MCP Server starting up (Fixed Version)")
     print(f"📁 Connected to Customer: {CUSTOMER_ID}, Library: {LIBRARY_ID}")
     print(f"🔐 Authentication Mode: {AUTH_MODE}")
     
@@ -365,7 +315,7 @@ async def startup_event():
 if __name__ == "__main__":
     import uvicorn
     
-    print("🚀 Starting iManage Deep Research MCP Server (Simplified OAuth)...")
+    print("🚀 Starting iManage Deep Research MCP Server (Fixed Version)...")
     
     # Use PORT environment variable (Render.com sets this automatically)
     port = int(os.getenv("PORT", 10000))

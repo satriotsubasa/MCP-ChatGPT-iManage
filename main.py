@@ -1,48 +1,22 @@
 #!/usr/bin/env python3
 """
-iManage Deep Research MCP Server for ChatGPT Integration - Main Server File
-Updated with User Authentication Support
-
-This is the main server file that coordinates all modules.
-The server supports both user authentication and service account modes.
-
-Modules:
-- config.py: Configuration and environment variables (updated for user auth)
-- auth.py: Authentication and token management (updated with user auth)
-- oauth_endpoints.py: OAuth 2.0 authentication endpoints (new)
-- document_processor.py: Document text extraction (PDF, Word, Excel, etc.)
-- search_service.py: Search functionality (title and keyword searches)
-- document_service.py: Document fetching and content retrieval
-- mcp_handlers.py: MCP protocol handlers (updated for user context)
-- test_endpoints.py: Test and diagnostic endpoints
-
-Environment Variables Required:
-- AUTH_MODE: "user" or "service" (authentication mode)
-- AUTH_URL_PREFIX: iManage authentication URL prefix
-- URL_PREFIX: iManage API URL prefix 
-- CLIENT_ID: OAuth client ID
-- CLIENT_SECRET: OAuth client secret
-- CUSTOMER_ID: iManage customer ID
-- LIBRARY_ID: iManage library ID
-- BASE_URL: Server base URL (required for user auth)
-- SERVICE_USERNAME: Service account username (for service mode)
-- SERVICE_PASSWORD: Service account password (for service mode)
+iManage Deep Research MCP Server for ChatGPT Integration - Simplified OAuth
 """
 
 import time
 import os
 import logging
 import asyncio
-from fastapi import FastAPI, Request, Form
+from fastapi import FastAPI, HTTPException, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 # Import our modules
 from config import validate_config, CUSTOMER_ID, LIBRARY_ID, is_user_auth_enabled, AUTH_MODE, BASE_URL
 from auth import get_token, user_auth_manager
 from mcp_handlers import handle_mcp_request
 from test_endpoints import router as test_router
-from oauth_endpoints import oauth_authorize, oauth_callback, oauth_token, oauth_userinfo, get_oauth_metadata
+from oauth_endpoints import oauth_authorize, oauth_callback, oauth_token, oauth_userinfo
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -92,121 +66,38 @@ async def root():
         "status": "healthy",
         "authentication": "user" if is_user_auth_enabled() else "service",
         "auth_mode": AUTH_MODE,
-        "modules": [
-            "config", "auth", "oauth_endpoints", "document_processor", 
-            "search_service", "document_service", "mcp_handlers", "test_endpoints"
-        ],
         "endpoints": {
             "mcp": "POST /",
             "oauth_authorize": "GET /oauth/authorize" if is_user_auth_enabled() else None,
             "oauth_callback": "GET /oauth/callback" if is_user_auth_enabled() else None,
-            "oauth_token": "POST /oauth/token",
+            "oauth_token": "POST /oauth/token" if is_user_auth_enabled() else None,
             "health": "GET /health",
-            "test": "GET /test",
-            "test_auth": "GET /test/auth"
+            "test": "GET /test"
         }
     }
 
-# ---- OAuth Endpoints (User Authentication) ----
-@app.get("/oauth/authorize")
-async def oauth_authorize_endpoint(request: Request):
-    """OAuth authorization endpoint"""
-    return await oauth_authorize(request)
-
-@app.get("/oauth/callback")
-async def oauth_callback_endpoint(request: Request):
-    """OAuth callback endpoint"""
-    return await oauth_callback(request)
-
-@app.post("/oauth/token")
-async def oauth_token_endpoint(
-    grant_type: str = Form(...),
-    code: str = Form(None),
-    refresh_token: str = Form(None),
-    client_id: str = Form(...),
-    client_secret: str = Form(...)
-):
-    """OAuth token endpoint"""
-    return await oauth_token(grant_type, code, refresh_token, client_id, client_secret)
-
-@app.get("/oauth/userinfo")
-async def oauth_userinfo_endpoint(request: Request):
-    """OAuth user info endpoint"""
-    return await oauth_userinfo(request)
-
-@app.get("/.well-known/oauth-authorization-server")
-async def oauth_metadata():
-    """OAuth server metadata"""
-    if not is_user_auth_enabled():
-        return {"error": "User authentication not enabled"}
-    return await get_oauth_metadata()
-
-# ---- User Management Endpoints ----
-@app.post("/auth/login")
-async def login_user(username: str = Form(...), password: str = Form(...)):
-    """Direct user login (alternative to OAuth)"""
-    if not is_user_auth_enabled():
-        return {"success": False, "error": "User authentication not enabled"}
-    
-    try:
-        session = await user_auth_manager.authenticate_user(username, password)
-        session_id = list(user_auth_manager.user_sessions.keys())[-1]  # Get latest session
-        
-        return {
-            "success": True,
-            "session_id": session_id,
-            "user_id": session.user_id,
-            "expires_at": session.expires_at
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-@app.get("/auth/status")
-async def auth_status_endpoint(request: Request):
-    """Check authentication status"""
-    if not is_user_auth_enabled():
-        return {
-            "authenticated": True,
-            "auth_mode": "service",
-            "message": "Service account authentication"
-        }
-    
-    # Extract session info from request
-    session_id = request.headers.get("X-Session-ID")
-    user_info = None
-    is_authenticated = False
-    
-    if session_id and session_id in user_auth_manager.user_sessions:
-        user_info = user_auth_manager.get_user_info(session_id)
-        is_authenticated = True
-    
-    return {
-        "authenticated": is_authenticated,
-        "auth_mode": "user",
-        "user_info": user_info,
-        "active_sessions": len(user_auth_manager.user_sessions),
-        "message": "User authentication required" if not is_authenticated else "User authenticated"
-    }
-
-# ---- MCP Discovery Endpoints ----
+# ---- Core MCP Discovery - This is what ChatGPT reads ----
 @app.get("/.well-known/mcp")
 async def mcp_discovery():
-    """MCP discovery endpoint"""
+    """MCP discovery endpoint with embedded OAuth configuration"""
     print("🔍 MCP discovery requested")
     
     if is_user_auth_enabled():
+        # Embed OAuth configuration directly in MCP discovery
         auth_config = {
             "type": "oauth2",
             "authorization_url": f"{BASE_URL}/oauth/authorize",
             "token_url": f"{BASE_URL}/oauth/token",
-            "scopes": ["read"]
+            "userinfo_url": f"{BASE_URL}/oauth/userinfo",
+            "scopes": ["read"],
+            "client_credentials": "required"
         }
     else:
         auth_config = {"type": "none"}
     
     return {
         "version": "2.1.0",
-        "name": "iManage Deep Research MCP Server",
+        "name": "iManage Deep Research MCP Server", 
         "description": "Deep research connector for iManage Work API with user authentication",
         "capabilities": {
             "tools": True,
@@ -220,89 +111,144 @@ async def mcp_discovery():
         }
     }
 
-@app.get("/manifest.json")
-async def manifest():
-    """Application manifest for ChatGPT"""
-    print("📋 Manifest requested")
-    
-    if is_user_auth_enabled():
-        auth_config = {
-            "type": "oauth",
-            "authorization_url": f"{BASE_URL}/oauth/authorize",
-            "token_url": f"{BASE_URL}/oauth/token",
-            "scope": "read"
-        }
-    else:
-        auth_config = {"type": "none"}
-    
-    return {
-        "schema_version": "v1",
-        "name_for_model": "imanage_deep_research",
-        "name_for_human": "iManage Deep Research",
-        "description_for_model": "Search and retrieve documents from iManage Work for deep research analysis with user authentication",
-        "description_for_human": "Access your iManage documents for comprehensive research with proper access controls",
-        "auth": auth_config,
-        "api": {
-            "type": "mcp",
-            "url": "/",
-            "has_user_authentication": is_user_auth_enabled()
-        },
-        "logo_url": "",
-        "contact_email": "",
-        "legal_info_url": ""
-    }
-
-@app.get("/.well-known/ai-plugin.json")
-async def ai_plugin():
-    """AI Plugin manifest"""
-    print("🤖 AI Plugin manifest requested")
-    return await manifest()
-
-# ---- Legacy OAuth Endpoints for Backward Compatibility ----
-@app.get("/connectors/oauth")
-async def connectors_oauth_legacy(request: Request):
-    """Legacy ChatGPT connector OAuth endpoint"""
-    print("🔗 Legacy ChatGPT connector OAuth request")
+# ---- Simple OAuth Endpoints ----
+@app.get("/oauth/authorize")
+async def oauth_authorize_endpoint(request: Request):
+    """OAuth authorization endpoint - simplified"""
+    print("🔐 OAuth authorization requested")
     
     if not is_user_auth_enabled():
-        base_url = str(request.base_url).rstrip('/')
+        raise HTTPException(status_code=404, detail="User authentication not enabled")
+    
+    # Get parameters
+    params = dict(request.query_params)
+    client_id = params.get("client_id")
+    redirect_uri = params.get("redirect_uri")
+    state = params.get("state")
+    
+    print(f"🔍 OAuth params: client_id={client_id}, redirect_uri={redirect_uri}, state={state}")
+    
+    # For simplified implementation, redirect directly to iManage
+    # In a real implementation, you'd store the original request and handle the flow properly
+    
+    # For now, return a simple login form
+    return HTMLResponse(f"""
+    <html>
+        <head>
+            <title>iManage Authentication</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; }}
+                .form {{ background: #f5f5f5; padding: 20px; border-radius: 10px; max-width: 400px; margin: 0 auto; }}
+                input {{ margin: 10px; padding: 10px; width: 200px; }}
+                button {{ background: #007cba; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; }}
+            </style>
+        </head>
+        <body>
+            <h2>🔐 iManage Authentication</h2>
+            <div class="form">
+                <p>Please log in with your iManage credentials:</p>
+                <form method="post" action="/oauth/authenticate">
+                    <input type="hidden" name="redirect_uri" value="{redirect_uri or ''}" />
+                    <input type="hidden" name="state" value="{state or ''}" />
+                    <input type="text" name="username" placeholder="Username" required /><br>
+                    <input type="password" name="password" placeholder="Password" required /><br>
+                    <button type="submit">🔓 Login</button>
+                </form>
+            </div>
+        </body>
+    </html>
+    """)
+
+@app.post("/oauth/authenticate")
+async def oauth_authenticate(
+    username: str = Form(...),
+    password: str = Form(...),
+    redirect_uri: str = Form(""),
+    state: str = Form("")
+):
+    """Handle OAuth authentication form submission"""
+    print(f"🔐 OAuth authentication attempt for user: {username}")
+    
+    try:
+        # Authenticate user with iManage
+        session = await user_auth_manager.authenticate_user(username, password)
+        session_id = list(user_auth_manager.user_sessions.keys())[-1]
+        
+        # Generate authorization code (simplified)
+        auth_code = f"auth_{session_id[:16]}"
+        
+        print(f"✅ Authentication successful, redirecting with code: {auth_code}")
+        
+        # Redirect back to ChatGPT with authorization code
+        if redirect_uri:
+            separator = "&" if "?" in redirect_uri else "?"
+            redirect_url = f"{redirect_uri}{separator}code={auth_code}&state={state}"
+            return RedirectResponse(url=redirect_url)
+        else:
+            # If no redirect URI, show success page
+            return HTMLResponse(f"""
+            <html>
+                <body>
+                    <h2>✅ Authentication Successful!</h2>
+                    <p>Authorization Code: {auth_code}</p>
+                    <p>You can now close this window.</p>
+                </body>
+            </html>
+            """)
+        
+    except Exception as e:
+        print(f"❌ Authentication failed: {str(e)}")
+        return HTMLResponse(f"""
+        <html>
+            <body>
+                <h2>❌ Authentication Failed</h2>
+                <p>Error: {str(e)}</p>
+                <p><a href="javascript:history.back()">Try Again</a></p>
+            </body>
+        </html>
+        """, status_code=401)
+
+@app.post("/oauth/token")
+async def oauth_token_endpoint(
+    grant_type: str = Form(...),
+    code: str = Form(None),
+    client_id: str = Form(...),
+    client_secret: str = Form(...),
+    redirect_uri: str = Form(None)
+):
+    """OAuth token endpoint - simplified"""
+    print(f"🔐 OAuth token request: grant_type={grant_type}, code={code}")
+    
+    if grant_type == "authorization_code":
+        if not code:
+            raise HTTPException(status_code=400, detail="Missing authorization code")
+        
+        # For simplified implementation, just return a basic token
+        # In real implementation, you'd validate the code and return proper tokens
         return {
-            "authorization_url": f"{base_url}/oauth/authorize",
-            "token_url": f"{base_url}/oauth/token",
-            "userinfo_url": f"{base_url}/oauth/userinfo",
-            "scopes": [],
-            "auto_approved": True
+            "access_token": f"mcp_token_{code}",
+            "token_type": "bearer",
+            "expires_in": 3600,
+            "scope": "read"
         }
     
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported grant type")
+
+@app.get("/oauth/userinfo")
+async def oauth_userinfo_endpoint(request: Request):
+    """OAuth user info endpoint"""
+    print("👤 OAuth userinfo requested")
+    
+    # For simplified implementation, return basic user info
     return {
-        "authorization_url": f"{BASE_URL}/oauth/authorize",
-        "token_url": f"{BASE_URL}/oauth/token",
-        "userinfo_url": f"{BASE_URL}/oauth/userinfo",
-        "scopes": ["read"],
-        "requires_auth": True
+        "sub": "imanage_user",
+        "name": "iManage User",
+        "email": "user@imanage.com",
+        "preferred_username": "imanage_user"
     }
 
-@app.post("/connectors/oauth")
-async def connectors_oauth_post_legacy():
-    """Legacy ChatGPT connector OAuth POST"""
-    return await oauth_token_endpoint("authorization_code", None, None, "dummy", "dummy")
-
-# ---- Legacy Endpoints ----
-@app.get("/mcp/tools")
-async def get_tools_legacy():
-    """Legacy endpoint for testing"""
-    print("🔄 Legacy tools endpoint accessed")
-    return {
-        "message": "This is a legacy endpoint. Use POST / with proper MCP protocol.",
-        "mcp_format": "POST / with method='tools/list'",
-        "version": "2.1.0",
-        "auth_mode": AUTH_MODE,
-        "tools": [
-            {"name": "search", "description": "Search iManage documents"},
-            {"name": "fetch", "description": "Fetch document content"}
-        ]
-    }
-
+# ---- Health Check ----
 @app.get("/health")
 async def health_check():
     """Simple health check endpoint"""
@@ -315,41 +261,19 @@ async def health_check():
         "user_auth_enabled": is_user_auth_enabled()
     }
 
-# ---- Background Tasks ----
-async def session_cleanup_task():
-    """Background task to cleanup expired sessions"""
-    while True:
-        try:
-            await asyncio.sleep(300)  # Run every 5 minutes
-            if is_user_auth_enabled():
-                user_auth_manager.cleanup_expired_sessions()
-        except Exception as e:
-            print(f"⚠️ Session cleanup error: {str(e)}")
-
 # ---- Startup Event ----
 @app.on_event("startup")
 async def startup_event():
     """Server startup logging"""
-    print("🎉 iManage Deep Research MCP Server starting up (User Auth Version)")
+    print("🎉 iManage Deep Research MCP Server starting up (Simplified OAuth)")
     print(f"📁 Connected to Customer: {CUSTOMER_ID}, Library: {LIBRARY_ID}")
     print(f"🔐 Authentication Mode: {AUTH_MODE}")
-    print("📦 Modules loaded:")
-    print("   - config.py: Configuration management (updated)")
-    print("   - auth.py: Authentication and token caching (updated)")
-    print("   - oauth_endpoints.py: OAuth 2.0 endpoints (new)")
-    print("   - document_processor.py: Document text extraction")
-    print("   - search_service.py: Search functionality")
-    print("   - document_service.py: Document fetching")
-    print("   - mcp_handlers.py: MCP protocol handling")
-    print("   - test_endpoints.py: Test and diagnostic endpoints")
     
     if is_user_auth_enabled():
-        print(f"🌐 OAuth Base URL: {BASE_URL}")
+        print(f"🌐 Base URL: {BASE_URL}")
         print(f"🔗 Authorization URL: {BASE_URL}/oauth/authorize")
         print(f"🎫 Token URL: {BASE_URL}/oauth/token")
-        
-        # Start session cleanup task
-        asyncio.create_task(session_cleanup_task())
+        print("✅ Simplified OAuth endpoints configured")
     else:
         print("⚙️ Running in service account mode")
         # Test service authentication on startup
@@ -362,17 +286,7 @@ async def startup_event():
 if __name__ == "__main__":
     import uvicorn
     
-    print("🚀 Starting iManage Deep Research MCP Server (User Auth)...")
-    print("📋 Server Structure:")
-    print("├── main.py (main - updated)")
-    print("├── config.py (updated)")
-    print("├── auth.py (updated)")
-    print("├── oauth_endpoints.py (new)")
-    print("├── document_processor.py")
-    print("├── search_service.py")
-    print("├── document_service.py")
-    print("├── mcp_handlers.py")
-    print("└── test_endpoints.py")
+    print("🚀 Starting iManage Deep Research MCP Server (Simplified OAuth)...")
     
     uvicorn.run(
         app, 

@@ -76,6 +76,29 @@ async def root():
         }
     }
 
+# ---- ChatGPT OAuth Configuration Endpoint ----
+@app.get("/oauth_config")
+async def oauth_config():
+    """OAuth configuration endpoint that ChatGPT calls to discover OAuth settings"""
+    print("🔗 ChatGPT OAuth config discovery requested")
+    
+    if not is_user_auth_enabled():
+        return {
+            "error": "User authentication not enabled",
+            "auth_mode": "service"
+        }
+    
+    # Return OAuth configuration in the format ChatGPT expects
+    return {
+        "authorization_url": f"{BASE_URL}/oauth/authorize",
+        "token_url": f"{BASE_URL}/oauth/token",
+        "userinfo_url": f"{BASE_URL}/oauth/userinfo",
+        "scopes": ["read"],
+        "response_type": "code",
+        "grant_type": "authorization_code",
+        "client_credentials_required": True
+    }
+
 # ---- Core MCP Discovery - This is what ChatGPT reads ----
 @app.get("/.well-known/mcp")
 async def mcp_discovery():

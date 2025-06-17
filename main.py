@@ -101,11 +101,37 @@ async def oauth_authorization_server_metadata():
         "authorization_endpoint": f"{BASE_URL}/oauth/authorize",
         "token_endpoint": f"{BASE_URL}/oauth/token",
         "userinfo_endpoint": f"{BASE_URL}/oauth/userinfo",
+        "registration_endpoint": f"{BASE_URL}/oauth/register",  # Dynamic client registration
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code"],
         "scopes_supported": ["read"],
-        "token_endpoint_auth_methods_supported": ["client_secret_post"],
+        "token_endpoint_auth_methods_supported": ["client_secret_post", "none"],
         "code_challenge_methods_supported": ["S256"]
+    }
+
+# ---- Dynamic OAuth Client Registration Endpoint ----
+@app.post("/oauth/register")
+async def oauth_register():
+    """Dynamic OAuth Client Registration endpoint"""
+    print("🔐 OAuth client registration requested")
+    
+    if not is_user_auth_enabled():
+        raise HTTPException(status_code=404, detail="User authentication not enabled")
+    
+    # For ChatGPT MCP integration, return a simplified client registration
+    return {
+        "client_id": "chatgpt_mcp_client",
+        "client_secret": "chatgpt_mcp_secret",
+        "client_id_issued_at": int(time.time()),
+        "client_secret_expires_at": 0,  # Never expires
+        "redirect_uris": [
+            "https://chatgpt.com/oauth/callback",
+            "https://chat.openai.com/oauth/callback"
+        ],
+        "grant_types": ["authorization_code"],
+        "response_types": ["code"],
+        "scope": "read",
+        "token_endpoint_auth_method": "client_secret_post"
     }
 
 # ---- Core MCP Discovery - This is what ChatGPT reads ----
@@ -245,8 +271,20 @@ async def oauth_token_endpoint(
     redirect_uri: str = Form(None),
     code_verifier: str = Form(None)  # PKCE support
 ):
-    """OAuth token endpoint - simplified with PKCE support"""
-    print(f"🔐 OAuth token request: grant_type={grant_type}, code={code}, pkce={code_verifier is not None}")
+    """OAuth token endpoint - simplified with PKCE support and dynamic client registration"""
+    print(f"🔐 OAuth token request: grant_type={grant_type}, code={code}, client_id={client_id}, pkce={code_verifier is not None}")
+    
+    # Accept both static and dynamic client credentials
+    valid_clients = [
+        ("chatgpt_mcp_client", "chatgpt_mcp_secret"),  # Dynamic registration
+        ("mcp_client", "mcp_secret"),  # Static fallback
+    ]
+    
+    client_valid = any(client_id == cid and client_secret == csec for cid, csec in valid_clients)
+    
+    if not client_valid:
+        print(f"❌ Invalid client credentials: {client_id}")
+        raise HTTPException(status_code=401, detail="Invalid client credentials")
     
     if grant_type == "authorization_code":
         if not code:

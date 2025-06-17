@@ -76,6 +76,27 @@ async def root():
         }
     }
 
+# ---- OAuth Authorization Server Metadata Endpoint ----
+@app.get("/.well-known/oauth-authorization-server")
+async def oauth_authorization_server_metadata():
+    """OAuth 2.0 Authorization Server Metadata - Required by ChatGPT"""
+    print("🔍 OAuth authorization server metadata requested")
+    
+    if not is_user_auth_enabled():
+        return {"error": "User authentication not enabled"}
+    
+    return {
+        "issuer": BASE_URL,
+        "authorization_endpoint": f"{BASE_URL}/oauth/authorize",
+        "token_endpoint": f"{BASE_URL}/oauth/token",
+        "userinfo_endpoint": f"{BASE_URL}/oauth/userinfo",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code"],
+        "scopes_supported": ["read"],
+        "token_endpoint_auth_methods_supported": ["client_secret_post"],
+        "code_challenge_methods_supported": ["S256"]
+    }
+
 # ---- ChatGPT OAuth Configuration Endpoint ----
 @app.get("/oauth_config")
 async def oauth_config():
@@ -312,7 +333,7 @@ if __name__ == "__main__":
     print("🚀 Starting iManage Deep Research MCP Server (Simplified OAuth)...")
     
     # Use PORT environment variable (Render.com sets this automatically)
-    port = int(os.getenv("PORT", 10000))
+    port = int(os.getenv("PORT", 8000))
     print(f"🌐 Server will bind to port: {port}")
     
     uvicorn.run(

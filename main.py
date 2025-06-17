@@ -225,16 +225,15 @@ async def manifest():
     """Application manifest for ChatGPT"""
     print("📋 Manifest requested")
     
-    auth_config = {
-        "type": "oauth" if is_user_auth_enabled() else "none"
-    }
-    
     if is_user_auth_enabled():
-        auth_config.update({
+        auth_config = {
+            "type": "oauth",
             "authorization_url": f"{BASE_URL}/oauth/authorize",
             "token_url": f"{BASE_URL}/oauth/token",
             "scope": "read"
-        })
+        }
+    else:
+        auth_config = {"type": "none"}
     
     return {
         "schema_version": "v1",
@@ -258,29 +257,6 @@ async def ai_plugin():
     """AI Plugin manifest"""
     print("🤖 AI Plugin manifest requested")
     return await manifest()
-
-# ---- ChatGPT MCP OAuth Configuration Endpoint ----
-@app.get("/oauth_config")
-async def oauth_config():
-    """OAuth configuration endpoint for ChatGPT MCP connector"""
-    print("🔗 ChatGPT MCP OAuth config requested")
-    
-    if not is_user_auth_enabled():
-        return {
-            "error": "User authentication not enabled",
-            "auth_mode": "service"
-        }
-    
-    # Return OAuth configuration in the exact format ChatGPT expects
-    return {
-        "client_id": "mcp_client",  # ChatGPT will use this
-        "authorization_url": f"{BASE_URL}/oauth/authorize",
-        "token_url": f"{BASE_URL}/oauth/token", 
-        "userinfo_url": f"{BASE_URL}/oauth/userinfo",
-        "scopes": ["read"],
-        "response_type": "code",
-        "grant_type": "authorization_code"
-    }
 
 # ---- Legacy OAuth Endpoints for Backward Compatibility ----
 @app.get("/connectors/oauth")

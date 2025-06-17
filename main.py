@@ -8,7 +8,7 @@ import time
 import os
 import logging
 import asyncio
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse, parse_qs
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -279,8 +279,8 @@ async def oauth_identify(
         # if not email.endswith("@riotinto.com"):
         #     raise ValueError("Please use your Rio Tinto email address")
         
-        # Generate authorization code with user context
-        auth_code = f"user_{email.replace('@', '_').replace('.', '_')}_{int(time.time())}"
+        # Generate authorization code with user context (simplified format for ChatGPT)
+        auth_code = f"auth{int(time.time())}{email.split('@')[0][:8]}"
         
         # Store user context for later use (simple in-memory storage)
         # In production, use a proper database
@@ -294,8 +294,22 @@ async def oauth_identify(
         
         # Redirect back to ChatGPT with authorization code
         if redirect_uri:
-            separator = "&" if "?" in redirect_uri else "?"
-            redirect_url = f"{redirect_uri}{separator}code={auth_code}&state={state}"
+            # Ensure proper URL encoding
+            from urllib.parse import urlencode, urlparse, parse_qs
+            
+            # Parse the redirect URI to add parameters correctly
+            parsed_uri = urlparse(redirect_uri)
+            query_params = parse_qs(parsed_uri.query) if parsed_uri.query else {}
+            
+            # Add our parameters
+            query_params['code'] = [auth_code]
+            query_params['state'] = [state]
+            
+            # Rebuild the URL
+            new_query = urlencode(query_params, doseq=True)
+            redirect_url = f"{parsed_uri.scheme}://{parsed_uri.netloc}{parsed_uri.path}?{new_query}"
+            
+            print(f"✅ Redirecting to ChatGPT: {redirect_url}")
             return RedirectResponse(url=redirect_url)
         else:
             return HTMLResponse(f"""
